@@ -41,15 +41,18 @@
   --acc-ring:rgba(76,141,255,.28);
   color-scheme:dark
 }
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif}
-.wrap{max-width:1100px;margin:0 auto;padding:24px 16px}
-h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mut);font-size:13px;margin-bottom:20px}
+*{box-sizing:border-box}html{min-width:320px}
+body{min-height:100vh;margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif}
+/* 内容区域占满：不设 max-width 上限，改用参考布局的自适应内边距 */
+.wrap{max-width:none;margin:0 auto;padding:clamp(24px,4vw,56px) clamp(16px,3vw,48px) 28px}
+h1{font-size:clamp(24px,2vw,30px);line-height:1.12;letter-spacing:-.035em;margin:0 0 4px}
+.sub{color:var(--mut);font-size:13px;margin-bottom:20px;max-width:720px}
 .bar{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
 button{background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}
 button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background:var(--btn-sec-hover)}button:disabled{opacity:.5;cursor:default}
 .toggle{display:flex;gap:8px;align-items:center;color:var(--mut);font-size:13px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
-.card,.summary{background:var(--card);border:1px solid var(--border);border-radius:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:16px;align-items:start}
+.card,.summary{background:var(--card);border:1px solid var(--border);border-radius:14px}
 .card{padding:16px}
 .card h2{font-size:15px;margin:0 0 2px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
 .uid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:12px}
