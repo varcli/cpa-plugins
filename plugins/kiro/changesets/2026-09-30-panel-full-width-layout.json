@@ -1,1 +1,0 @@
-{"bump": "patch", "note": "面板样式改为全宽布局: 去掉 .wrap 的 max-width:1100px 上限, 改用参考布局的自适应内边距 clamp(24px,4vw,56px) clamp(16px,3vw,48px); 账号卡网格由 auto-fill/minmax(340px) 改为 auto-fit/minmax(min(100%,340px)) 并对齐到顶部, 卡片圆角 12→14px; html 加 min-width:320px、body 加 min-height:100vh。仅动样式, 不改 DOM 元素与 JS 行为。"}
