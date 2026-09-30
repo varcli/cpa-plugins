@@ -6,7 +6,7 @@
       "name": "Cline",
       "description": "Cline / ClinePass provider for CLIProxyAPI: WorkOS device-flow OAuth login, Cline token registration and single-flight refresh, live recommended-models discovery with per-account catalog merge, streaming and non-streaming chat completions, and a management panel for accounts and models.",
       "author": "varcli",
-      "version": "0.2.0",
+      "version": "0.5.0",
       "repository": "https://github.com/varcli/cpa-plugins",
       "homepage": "https://github.com/varcli/cpa-plugins/tree/main/plugins/cline",
       "license": "MIT",
@@ -22,23 +22,23 @@
           {
             "goarch": "arm64",
             "goos": "darwin",
-            "sha256": "3b2d97d9498e1cb13d8446db8bcaf9354ed491b9c34b09e8a553bb4f6d1847ea",
-            "size": 1799887,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.2.0/cline_0.2.0_darwin_arm64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.5.0/cline_0.5.0_darwin_arm64.zip"
           },
           {
             "goarch": "amd64",
             "goos": "linux",
-            "sha256": "181768257e71fa2d7df40cf46dc96a848f30df8628e2601656905feb32fbe919",
-            "size": 3485404,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.2.0/cline_0.2.0_linux_amd64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.5.0/cline_0.5.0_linux_amd64.zip"
           },
           {
             "goarch": "arm64",
             "goos": "linux",
-            "sha256": "84b0bffaf68bd50862af6a94e89506f7a7161b8530f3cc6f21787ef0b280f482",
-            "size": 3180055,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.2.0/cline_0.2.0_linux_arm64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.5.0/cline_0.5.0_linux_arm64.zip"
           }
         ],
         "type": "direct"
