@@ -1,4 +1,0 @@
-{
-  "bump": "patch",
-  "note": "修复面板粘贴 OAuth 回调链接后误报「请先点击「新增 Kiro 账号」」的问题: submitCallbackURL 原先只依赖内存里的 loginState, 面板重载或 iframe 重挂后该变量丢失, 即使已发起登录也会被拦下。现改为先从粘贴的回调链接里解析 state (授权页会原样回传) 恢复会话, 仅在链接中确实没有 state 时才提示; 并区分服务端 unknown_state (会话已过期) 给出「请重新点击「新增 Kiro 账号」」的明确提示。"
-}
