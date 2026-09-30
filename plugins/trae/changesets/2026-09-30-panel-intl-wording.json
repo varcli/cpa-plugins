@@ -1,0 +1,1 @@
+{"bump": "patch", "note": "修正面板文案: Intl 域名由误写的 codebuddy.ai 改回 marscode (Trae Intl 实际走 api.marscode.com / core-normal.trae.ai, codebuddy.ai 是 workbuddy 的域, 属复制串味); 副标题补上 CN / SOLO 适用范围, 消除与上一行「Intl 无签到」的自相矛盾。"}
