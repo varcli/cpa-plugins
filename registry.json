@@ -150,7 +150,7 @@
       "name": "Trae",
       "description": "Trae unified provider for CLIProxyAPI: Trae Code CN (api.trae.cn inline_chat), Trae SOLO CN (solo_work_lite) and Trae Intl (api.marscode.com Web SOLO) in one plugin, per-variant routing, real-time SSE, daily check-in, auto-adopts legacy trae-cn / trae-solo-cn / trae-intl auth files.",
       "author": "varcli",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "repository": "https://github.com/varcli/cpa-plugins",
       "homepage": "https://github.com/varcli/cpa-plugins/tree/main/plugins/trae",
       "license": "MIT",
@@ -165,23 +165,23 @@
           {
             "goarch": "arm64",
             "goos": "darwin",
-            "sha256": "1694b0e37fafc4e60aaaa2e282132af01188e412deb5dde1bc164366883198be",
-            "size": 3061413,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.5.0/trae_0.5.0_darwin_arm64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.5.1/trae_0.5.1_darwin_arm64.zip"
           },
           {
             "goarch": "amd64",
             "goos": "linux",
-            "sha256": "2c6f7fb57ce338cdadd7d585e47b68da749ca0dd56d5b4ca0a477468d8bad0aa",
-            "size": 5964406,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.5.0/trae_0.5.0_linux_amd64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.5.1/trae_0.5.1_linux_amd64.zip"
           },
           {
             "goarch": "arm64",
             "goos": "linux",
-            "sha256": "d56d93f13cb7effd41a93a219840e987fc492c5237ddc964a9621518b54bf697",
-            "size": 5402579,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.5.0/trae_0.5.0_linux_arm64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.5.1/trae_0.5.1_linux_arm64.zip"
           }
         ],
         "type": "direct"

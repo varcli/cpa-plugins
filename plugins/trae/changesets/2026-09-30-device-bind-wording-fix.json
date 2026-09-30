@@ -1,4 +1,0 @@
-{
-  "bump": "patch",
-  "note": "设备绑定: 修正告警归因 + 新增「对齐设备绑定」按钮。(1) 归因修正: 自 v0.12.65 起签到族请求 (status/claim) 一律携带每轮新生成的随机 16 位 x-device-id, 既不发送服务端 BoundDeviceID 也不发送本凭证 deviceId, 故 device_match=false 不会诱发签到 9074 —— 旧文案「签到风控高危，建议退出重新登录换绑设备」与实现矛盾。面板徽标改为「绑定不一致」并说明仅影响积分查询等 ug/pay 族请求画像、不影响签到; 卡片设备绑定行由红色 err 降为 warn, 并排显示服务端绑定值与本凭证 deviceId; /accounts 新增 device_id 字段。日志同步分级: 仅登录态失效 (is_login=false) 保留 warning, 绑定值不一致降为诊断 note。(2) 新增 POST /device/align (body: auth_index) 与面板「对齐设备绑定」按钮 (仅 device_match=false 且服务端有绑定值时出现, 带二次确认): 把凭证 auth.deviceId 改写为服务端 BoundDeviceID, 使 ug/pay 族请求画像与绑定一致。绑定值一律由服务端 CheckLogin 实时取回, 不接受调用方传入; BoundDeviceID 为空时拒绝; 写入走 mergeAuthStorage 只覆盖固定键, devicePublicKey/devicePrivateKey/exchangeResponse 等字段原样保留; 完成后清除该账号绑定快照缓存以便重新探测。签到行为不变。"
-}
