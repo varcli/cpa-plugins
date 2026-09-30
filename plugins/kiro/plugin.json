@@ -8,22 +8,22 @@
       {
         "goarch": "arm64",
         "goos": "darwin",
-        "sha256": "",
-        "size": 0,
+        "sha256": "dfcf66eeee500bec0da86d63c8166b2dcf8be7500d57e25b7226508adebc34b3",
+        "size": 3725229,
         "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.5.0/kiro_0.5.0_darwin_arm64.zip"
       },
       {
         "goarch": "amd64",
         "goos": "linux",
-        "sha256": "",
-        "size": 0,
+        "sha256": "781a3635537305ee67f28ace426a82ee7c742c5c4b3069853adf437d602b11cf",
+        "size": 7190196,
         "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.5.0/kiro_0.5.0_linux_amd64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "linux",
-        "sha256": "",
-        "size": 0,
+        "sha256": "f0c07b7f73d36c00badf0d2f46342d9bd085dcffcf60658ce7610ab70ffb2ee7",
+        "size": 6665001,
         "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.5.0/kiro_0.5.0_linux_arm64.zip"
       }
     ],
