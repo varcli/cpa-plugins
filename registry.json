@@ -1,0 +1,233 @@
+{
+  "schema_version": 2,
+  "plugins": [
+    {
+      "id": "cline",
+      "name": "Cline",
+      "description": "Cline / ClinePass provider for CLIProxyAPI: WorkOS device-flow OAuth login, Cline token registration and single-flight refresh, live recommended-models discovery with per-account catalog merge, streaming and non-streaming chat completions, and a management panel for accounts and models.",
+      "author": "varcli",
+      "version": "0.1.0",
+      "repository": "https://github.com/varcli/cpa-plugins",
+      "homepage": "https://github.com/varcli/cpa-plugins/tree/main/plugins/cline",
+      "license": "MIT",
+      "tags": [
+        "provider",
+        "cline",
+        "clinepass",
+        "workos",
+        "oauth"
+      ],
+      "install": {
+        "artifacts": [
+          {
+            "goarch": "arm64",
+            "goos": "darwin",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.1.0/cline_0.1.0_darwin_arm64.zip"
+          },
+          {
+            "goarch": "amd64",
+            "goos": "linux",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.1.0/cline_0.1.0_linux_amd64.zip"
+          },
+          {
+            "goarch": "arm64",
+            "goos": "linux",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.1.0/cline_0.1.0_linux_arm64.zip"
+          }
+        ],
+        "type": "direct"
+      }
+    },
+    {
+      "id": "cpa-codex-autoban",
+      "name": "Codex 429 Autoban",
+      "description": "Auto-disable Codex credentials after 429 and manually re-enable them after quota reset.",
+      "author": "shelken",
+      "version": "0.2.4",
+      "repository": "https://github.com/shelken/cpa-codex-autoban",
+      "homepage": "https://github.com/shelken/cpa-codex-autoban",
+      "license": "MIT",
+      "tags": [
+        "codex",
+        "scheduler",
+        "usage",
+        "management"
+      ]
+    },
+    {
+      "id": "kiro",
+      "name": "Kiro",
+      "description": "Kiro (AWS CodeWhisperer) provider for CLIProxyAPI: imports Kiro IDE / kiro-cli / Amazon Q / AWS SSO credentials (JSON, SQLite, sibling device registrations), Kiro desktop browser OAuth, AWS SSO OIDC device flow and IAM Identity Center browser flow, live ListAvailableModels catalog discovery, AWS Event Stream chat executor, GetUsageLimits quota reporting, and a management panel.",
+      "author": "varcli",
+      "version": "0.1.0",
+      "repository": "https://github.com/varcli/cpa-plugins",
+      "homepage": "https://github.com/varcli/cpa-plugins/tree/main/plugins/kiro",
+      "license": "MIT",
+      "tags": [
+        "provider",
+        "kiro",
+        "aws",
+        "codewhisperer",
+        "amazon-q"
+      ],
+      "install": {
+        "artifacts": [
+          {
+            "goarch": "arm64",
+            "goos": "darwin",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.1.0/kiro_0.1.0_darwin_arm64.zip"
+          },
+          {
+            "goarch": "amd64",
+            "goos": "linux",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.1.0/kiro_0.1.0_linux_amd64.zip"
+          },
+          {
+            "goarch": "arm64",
+            "goos": "linux",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.1.0/kiro_0.1.0_linux_arm64.zip"
+          }
+        ],
+        "type": "direct"
+      }
+    },
+    {
+      "id": "qoder",
+      "name": "Qoder",
+      "description": "Qoder unified provider for CLIProxyAPI: CN (qoder.com.cn) and Intl (qoder.com / openapi.qoder.sh) in one plugin, per-account region routing, device-flow + PAT login, COSY-signed chat, daily check-in with streak, Pro upgrade claim, token keepalive, auto-adopts legacy qoder-cn / qoder-intl auth files.",
+      "author": "varcli",
+      "version": "0.1.0",
+      "repository": "https://github.com/varcli/cpa-plugins",
+      "homepage": "https://github.com/varcli/cpa-plugins/tree/main/plugins/qoder",
+      "license": "MIT",
+      "tags": [
+        "provider",
+        "qoder",
+        "qoderwork",
+        "checkin"
+      ],
+      "install": {
+        "artifacts": [
+          {
+            "goarch": "arm64",
+            "goos": "darwin",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.1.0/qoder_0.1.0_darwin_arm64.zip"
+          },
+          {
+            "goarch": "amd64",
+            "goos": "linux",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.1.0/qoder_0.1.0_linux_amd64.zip"
+          },
+          {
+            "goarch": "arm64",
+            "goos": "linux",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.1.0/qoder_0.1.0_linux_arm64.zip"
+          }
+        ],
+        "type": "direct"
+      }
+    },
+    {
+      "id": "trae",
+      "name": "Trae",
+      "description": "Trae unified provider for CLIProxyAPI: Trae Code CN (api.trae.cn inline_chat), Trae SOLO CN (solo_work_lite) and Trae Intl (api.marscode.com Web SOLO) in one plugin, per-variant routing, real-time SSE, daily check-in, auto-adopts legacy trae-cn / trae-solo-cn / trae-intl auth files.",
+      "author": "varcli",
+      "version": "0.1.0",
+      "repository": "https://github.com/varcli/cpa-plugins",
+      "homepage": "https://github.com/varcli/cpa-plugins/tree/main/plugins/trae",
+      "license": "MIT",
+      "tags": [
+        "provider",
+        "trae",
+        "traework",
+        "checkin"
+      ],
+      "install": {
+        "artifacts": [
+          {
+            "goarch": "arm64",
+            "goos": "darwin",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.1.0/trae_0.1.0_darwin_arm64.zip"
+          },
+          {
+            "goarch": "amd64",
+            "goos": "linux",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.1.0/trae_0.1.0_linux_amd64.zip"
+          },
+          {
+            "goarch": "arm64",
+            "goos": "linux",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.1.0/trae_0.1.0_linux_arm64.zip"
+          }
+        ],
+        "type": "direct"
+      }
+    },
+    {
+      "id": "workbuddy",
+      "name": "WorkBuddy",
+      "description": "Tencent CodeBuddy / WorkBuddy unified provider for CLIProxyAPI: one credit pool, three realms (copilot.tencent.com CN, workbuddy.ai Global, codebuddy.ai Intl), dual login platforms (CLI + CodeBuddy IDE), auto-adopts legacy codebuddy-cn / codebuddy-intl auth files, OpenAI-compatible chat, daily check-in, credit lifecycle, multi-account pool.",
+      "author": "varcli",
+      "version": "0.1.0",
+      "repository": "https://github.com/varcli/cpa-plugins",
+      "homepage": "https://github.com/varcli/cpa-plugins/tree/main/plugins/workbuddy",
+      "license": "MIT",
+      "tags": [
+        "provider",
+        "workbuddy",
+        "codebuddy",
+        "tencent"
+      ],
+      "install": {
+        "artifacts": [
+          {
+            "goarch": "arm64",
+            "goos": "darwin",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.1.0/workbuddy_0.1.0_darwin_arm64.zip"
+          },
+          {
+            "goarch": "amd64",
+            "goos": "linux",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.1.0/workbuddy_0.1.0_linux_amd64.zip"
+          },
+          {
+            "goarch": "arm64",
+            "goos": "linux",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.1.0/workbuddy_0.1.0_linux_arm64.zip"
+          }
+        ],
+        "type": "direct"
+      }
+    }
+  ]
+}

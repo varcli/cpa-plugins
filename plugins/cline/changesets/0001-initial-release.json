@@ -1,0 +1,4 @@
+{
+  "bump": "minor",
+  "note": "首个版本: Cline / ClinePass Provider 插件。WorkOS 设备码 OAuth 登录 + Cline token 注册; 单飞刷新 + 401 重试 + refresh_interval_seconds 宿主调度; recommended-models 实时模型目录并按账号合并; 流式/非流式 chat completions 执行器; 账号与模型管理面板。"
+}

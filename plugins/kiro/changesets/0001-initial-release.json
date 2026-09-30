@@ -1,0 +1,4 @@
+{
+  "bump": "minor",
+  "note": "首个版本: Kiro (AWS CodeWhisperer) Provider 插件。导入 Kiro IDE / kiro-cli / Amazon Q / AWS SSO 凭证(JSON、SQLite、同目录 device-registration); Kiro 桌面浏览器 OAuth 与 AWS SSO OIDC 设备码 / IAM Identity Center 组织登录; ListAvailableModels 实时模型目录; AWS Event Stream 流式执行; GetUsageLimits 配额; 管理面板。"
+}

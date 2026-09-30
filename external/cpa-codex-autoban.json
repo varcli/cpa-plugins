@@ -1,0 +1,16 @@
+{
+  "id": "cpa-codex-autoban",
+  "name": "Codex 429 Autoban",
+  "description": "Auto-disable Codex credentials after 429 and manually re-enable them after quota reset.",
+  "author": "shelken",
+  "version": "0.2.4",
+  "repository": "https://github.com/shelken/cpa-codex-autoban",
+  "homepage": "https://github.com/shelken/cpa-codex-autoban",
+  "license": "MIT",
+  "tags": [
+    "codex",
+    "scheduler",
+    "usage",
+    "management"
+  ]
+}

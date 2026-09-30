@@ -1,0 +1,181 @@
+name: Release Plugin
+
+on:
+  push:
+    tags:
+      - "*/v*"
+
+permissions:
+  contents: write
+
+jobs:
+  parse-tag:
+    name: Parse Tag
+    runs-on: ubuntu-latest
+    outputs:
+      plugin_id: ${{ steps.parse.outputs.plugin_id }}
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - name: Parse plugin ID and version
+        id: parse
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          PLUGIN_ID="${TAG%%/*}"
+          RAW_VERSION="${TAG##*/}"
+          VERSION="${RAW_VERSION#v}"
+          echo "plugin_id=${PLUGIN_ID}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building plugin '${PLUGIN_ID}' version '${VERSION}'"
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: parse-tag
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            runner: ubuntu-latest
+            extension: ".so"
+          - goos: linux
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+            extension: ".so"
+          - goos: darwin
+            goarch: arm64
+            runner: macos-14
+            extension: ".dylib"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: plugins/${{ needs.parse-tag.outputs.plugin_id }}/go.mod
+          cache: true
+
+      - name: Build dynamic library
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          PLUGIN_ID: ${{ needs.parse-tag.outputs.plugin_id }}
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          cd "plugins/${PLUGIN_ID}"
+          go build -buildmode=c-shared -o "${PLUGIN_ID}${EXTENSION}" .
+        shell: bash
+
+      # 三处命名都由宿主 internal/pluginstore 定死, 改动会导致安装失败:
+      # 资产名 = <id>_<version>_<goos>_<goarch>.zip (ArchiveName);
+      # 包内只允许一个根级动态库, 名为 <id><扩展名> 或 <id>-v<version><扩展名>;
+      # 校验文件必须叫 checksums.txt。
+      - name: Pack zip
+        id: pack
+        shell: bash
+        env:
+          PLUGIN_ID: ${{ needs.parse-tag.outputs.plugin_id }}
+          VERSION: ${{ needs.parse-tag.outputs.version }}
+          GOOS_NAME: ${{ matrix.goos }}
+          GOARCH_NAME: ${{ matrix.goarch }}
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          asset="${PLUGIN_ID}_${VERSION}_${GOOS_NAME}_${GOARCH_NAME}.zip"
+          ( cd "plugins/${PLUGIN_ID}" && zip "${asset}" "${PLUGIN_ID}${EXTENSION}" )
+          mv "plugins/${PLUGIN_ID}/${asset}" .
+          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.asset }}
+          path: ${{ steps.pack.outputs.asset }}
+          if-no-files-found: error
+
+  release:
+    name: Publish Release Assets
+    needs: [parse-tag, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Generate checksums.txt
+        run: |
+          cd assets
+          sha256sum *.zip > checksums.txt
+          cat checksums.txt
+
+      - name: Upload assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            assets/*.zip
+            assets/checksums.txt
+          generate_release_notes: true
+
+  record:
+    name: Record Artifact Hashes
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-record-main
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      - name: Download release assets and record hashes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          PLUGIN_ID="${TAG%%/*}"
+          RAW_VERSION="${TAG##*/}"
+          VERSION="${RAW_VERSION#v}"
+
+          # record 本身幂等（回填存在的产物 + build-registry 全量重建），
+          # 每次尝试基于最新 main 重新生成，push 被拒（并发回填）则重来
+          for attempt in 1 2 3 4 5; do
+            echo "== record 第 ${attempt}/5 次尝试 =="
+            git fetch origin main
+            git reset --hard origin/main
+            rm -rf dist
+            gh release download "${PLUGIN_ID}/v${VERSION}" --pattern '*.zip' --dir dist
+            go run scripts/release.go record --plugin "${PLUGIN_ID}" --dist dist
+            go run scripts/build-registry.go --check
+
+            if git diff --quiet "plugins/${PLUGIN_ID}/plugin.json" registry.json; then
+              echo "两个文件均无变化，跳过提交"
+              exit 0
+            fi
+
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add "plugins/${PLUGIN_ID}/plugin.json" registry.json
+            git commit -m "chore(release): 回填 ${PLUGIN_ID} ${VERSION} 真实产物哈希"
+            if git push origin main; then
+              exit 0
+            fi
+            echo "[!] push 被拒(并发回填), 20s 后基于最新 main 重试"
+            sleep 20
+          done
+          echo "record 重试 5 次仍失败" >&2
+          exit 1

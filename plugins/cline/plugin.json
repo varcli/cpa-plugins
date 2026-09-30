@@ -1,0 +1,44 @@
+{
+  "author": "varcli",
+  "description": "Cline / ClinePass provider for CLIProxyAPI: WorkOS device-flow OAuth login, Cline token registration and single-flight refresh, live recommended-models discovery with per-account catalog merge, streaming and non-streaming chat completions, and a management panel for accounts and models.",
+  "homepage": "https://github.com/varcli/cpa-plugins/tree/main/plugins/cline",
+  "id": "cline",
+  "install": {
+    "artifacts": [
+      {
+        "goarch": "arm64",
+        "goos": "darwin",
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.1.0/cline_0.1.0_darwin_arm64.zip"
+      },
+      {
+        "goarch": "amd64",
+        "goos": "linux",
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.1.0/cline_0.1.0_linux_amd64.zip"
+      },
+      {
+        "goarch": "arm64",
+        "goos": "linux",
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.1.0/cline_0.1.0_linux_arm64.zip"
+      }
+    ],
+    "type": "direct"
+  },
+  "license": "MIT",
+  "name": "Cline",
+  "repository": "https://github.com/varcli/cpa-plugins",
+  "schema_version": 2,
+  "tags": [
+    "provider",
+    "cline",
+    "clinepass",
+    "workos",
+    "oauth"
+  ],
+  "version": "0.1.0"
+}

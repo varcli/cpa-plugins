@@ -1,0 +1,26 @@
+# Binaries and libraries
+*.so
+*.dylib
+*.dll
+*.exe
+*.a
+*.o
+
+# Exclude generated C headers for dynamic libraries except if needed
+plugins/*/*.h
+
+# Archives and build artifacts
+*.zip
+staging/
+assets/
+dist/
+bin/
+
+# OS and IDE files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Browser automation scratch space
+.playwright-cli/

@@ -1,0 +1,43 @@
+{
+  "author": "varcli",
+  "description": "Tencent CodeBuddy / WorkBuddy unified provider for CLIProxyAPI: one credit pool, three realms (copilot.tencent.com CN, workbuddy.ai Global, codebuddy.ai Intl), dual login platforms (CLI + CodeBuddy IDE), auto-adopts legacy codebuddy-cn / codebuddy-intl auth files, OpenAI-compatible chat, daily check-in, credit lifecycle, multi-account pool.",
+  "homepage": "https://github.com/varcli/cpa-plugins/tree/main/plugins/workbuddy",
+  "id": "workbuddy",
+  "install": {
+    "artifacts": [
+      {
+        "goarch": "arm64",
+        "goos": "darwin",
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.1.0/workbuddy_0.1.0_darwin_arm64.zip"
+      },
+      {
+        "goarch": "amd64",
+        "goos": "linux",
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.1.0/workbuddy_0.1.0_linux_amd64.zip"
+      },
+      {
+        "goarch": "arm64",
+        "goos": "linux",
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.1.0/workbuddy_0.1.0_linux_arm64.zip"
+      }
+    ],
+    "type": "direct"
+  },
+  "license": "MIT",
+  "name": "WorkBuddy",
+  "repository": "https://github.com/varcli/cpa-plugins",
+  "schema_version": 2,
+  "tags": [
+    "provider",
+    "workbuddy",
+    "codebuddy",
+    "tencent"
+  ],
+  "version": "0.1.0"
+}
