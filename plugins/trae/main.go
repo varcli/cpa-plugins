@@ -483,7 +483,7 @@ func buildRegistration() registrationPayload {
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             providerName,
-			Version:          "0.1.1",
+			Version:          "0.5.0",
 			Author:           "varcli",
 			GitHubRepository: "https://github.com/varcli/cpa-plugins",
 			Logo:             pluginLogoURL,
