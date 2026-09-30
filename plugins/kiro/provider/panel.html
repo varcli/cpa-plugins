@@ -280,6 +280,9 @@ async function api(path, opts){
 
 let accountCache=[];
 let loginState="";
+/* 粘贴框当前服务的是哪种登录：新增（login）还是重登录（relogin）。
+   两者的 state 空间不同，提交时不能串台。 */
+let loginMode="login";
 
 async function load(force, btn){
   if(btn)busy(btn,true);
@@ -395,6 +398,7 @@ async function loginStart(btn){
   busy(btn,true);
   try{
     const data=await api("/oauth/login/start",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders(getKey())),body:"{}"});
+    loginMode="login";
     loginState=(data&&data.state)||"";
     const url=(data&&data.url)||"";
     setLoginStatus("登录已开始 · state="+loginState, url);
@@ -405,10 +409,15 @@ async function loginStart(btn){
     toast("无法开始登录", "err", e.message);
   }finally{busy(btn,false)}
 }
+/* 新增登录与重登录各有自己的状态端点；粘贴回调后要继续轮询哪一个，
+   取决于当前登录是哪种。 */
+function loginStatusEndpoint(){
+  return loginMode==="relogin"?"/oauth/relogin/status":"/oauth/login/status";
+}
 async function loginPoll(btn){
   if(btn)busy(btn,true);
   try{
-    const data=await api("/oauth/login/status?state="+encodeURIComponent(loginState));
+    const data=await api(loginStatusEndpoint()+"?state="+encodeURIComponent(loginState));
     handleLoginResult(data);
   }catch(e){
     toast("查询失败", "err", e.message);
@@ -434,7 +443,8 @@ async function submitCallbackURL(btn){
   loginState=state;
   busy(btn,true);
   try{
-    const data=await api("/oauth/login/status?state="+encodeURIComponent(state),{
+    const ep=loginMode==="relogin"?"/oauth/relogin/status":"/oauth/login/status";
+    const data=await api(ep+"?state="+encodeURIComponent(state),{
       method:"POST",
       headers:Object.assign({"Content-Type":"application/json"},authHeaders(getKey())),
       body:JSON.stringify({callback_url:v})
@@ -442,12 +452,19 @@ async function submitCallbackURL(btn){
     handleLoginResult(data);
     if(data&&data.status==="success")document.getElementById("cbPaste").value="";
   }catch(e){
-    if(e.message==="unknown_state"){
+    // 后端把回调校验失败的具体原因放在 error 码里（unknown_state /
+    // invalid_callback / expired_state / login_already_continued…）。
+    const code=e.message||"";
+    if(code==="unknown_state"||code==="expired_state"){
       loginState="";
       setLoginStatus("登录会话已过期","");
       toast("登录会话已过期", "warn", "请重新点击「新增 Kiro 账号」发起登录");
+    }else if(code==="invalid_callback"){
+      toast("回调链接无效", "err", "请确认粘贴的是本次登录回调地址（含 code 与 state）");
+    }else if(code==="login_already_continued"){
+      toast("该回调已处理", "warn", "登录已在进行中，请稍候查看状态");
     }else{
-      toast("提交失败", "err", e.message);
+      toast("提交失败", "err", code);
     }
   }finally{busy(btn,false)}
 }
@@ -462,6 +479,12 @@ function handleLoginResult(data){
     setLoginStatus("登录失败："+((data&&data.message)||"未知错误"),"");
     toast("登录失败", "err", (data&&data.message)||"");
     loginState="";
+  }else if(status==="continue"){
+    // 组织/Builder ID 登录：回调只完成第一步，还需访问验证地址并输入用户码。
+    const url=data.url||"", code=data.user_code||"";
+    setLoginStatus("请在浏览器打开验证地址完成授权"+(code?("，用户码 "+code):"")+(url?("　验证地址："+url):""), url);
+    if(url){ try{window.open(url,"_blank","noopener")}catch(e){} }
+    toast("还需完成一步授权", "warn", code?("用户码 "+code+"（已尝试打开验证页）"):"请打开验证地址完成授权");
   }else{
     setLoginStatus("等待授权…（"+esc(status||"pending")+"）","");
   }
@@ -472,7 +495,7 @@ function pollLoop(){
   pollTimer=setInterval(async()=>{
     if(!loginState){clearInterval(pollTimer);pollTimer=null;return}
     try{
-      const data=await api("/oauth/login/status?state="+encodeURIComponent(loginState));
+      const data=await api(loginStatusEndpoint()+"?state="+encodeURIComponent(loginState));
       handleLoginResult(data);
     }catch(e){/* keep polling; transient */}
   },3000);
@@ -491,6 +514,7 @@ async function relogin(authIndex, btn){
       headers:Object.assign({"Content-Type":"application/json"},authHeaders(getKey())),
       body:JSON.stringify({auth_index:authIndex})
     });
+    loginMode="relogin";
     loginState=(data&&data.state)||"";
     const url=(data&&data.url)||"";
     setLoginStatus("重新登录已开始 · state="+loginState, url);

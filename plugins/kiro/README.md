@@ -59,8 +59,10 @@ CGO_ENABLED=1 go build -buildmode=c-shared -o kiro.so .
 
 在管理面板的 Kiro 页面点「新增 Kiro 账号」：
 
-- **浏览器流程**（`login_mode: kiro-browser`）：在新标签页完成授权。若浏览器停在「无法连接 127.0.0.1:&lt;端口&gt;」页面，把地址栏完整链接粘贴到面板的粘贴框提交即可（无需改写前缀）。
-- **设备码流程**（`login_mode: aws-device`）：访问面板给出的验证地址并输入用户码。该流程同时支持 Builder ID 与 IAM Identity Center 组织账号。
+- **浏览器流程**（`login_mode: kiro-browser`）：在新标签页完成授权。若浏览器停在「无法连接 127.0.0.1:&lt;端口&gt;」页面，把地址栏完整链接粘贴到面板的粘贴框提交即可（无需改写前缀）。粘贴的链接会走与回调页完全相同的校验与落盘路径，提交后立即换取 token 并保存凭据。
+- **设备码流程**（`login_mode: aws-device`）：访问面板给出的验证地址并输入用户码。该流程同时支持 Builder ID 与 IAM Identity Center 组织账号。组织账号走两步：粘贴回调后插件返回验证地址与用户码，按提示在浏览器打开验证页即可。
+
+粘贴框同时服务于「新增账号」与卡片上的「重新登录」：插件会按当前登录类型把回调提交到对应端点（`/oauth/login/status` 或 `/oauth/relogin/status`）。
 
 ### 导入已有凭证
 
@@ -84,6 +86,7 @@ cpa --kiro-import /path/to/credentials --kiro-import-mode reference
 | `POST /oauth/login/status` | 提交浏览器回调 URL（`callback_url`）完成登录 |
 | `POST /oauth/relogin/start` | 对已有 Kiro 凭据重新登录（`auth_index`） |
 | `GET /oauth/relogin/status` | 轮询凭据替换登录 |
+| `POST /oauth/relogin/status` | 提交浏览器回调 URL（`callback_url`）完成重新登录 |
 | `POST /oauth/callback` | 接收 Kiro 浏览器回调，组织账号继续走 AWS SSO OIDC |
 
 ### 面板

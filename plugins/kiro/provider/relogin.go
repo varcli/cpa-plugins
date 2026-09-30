@@ -87,6 +87,13 @@ func handleReloginStatus(req managementRequest) ([]byte, error) {
 	if !ok {
 		return managementJSON(http.StatusNotFound, map[string]any{"error": "unknown_state"}), nil
 	}
+	// 重登录同样支持粘贴回调：Docker/远程宿主下浏览器回不到 127.0.0.1，
+	// 回调只能由用户粘贴。复用与新增登录相同的消费路径，避免重登录卡死。
+	if req.Method == http.MethodPost {
+		if raw, outcome := consumePastedCallback(req); outcome == pastedCallbackDone {
+			return raw, nil
+		}
+	}
 	pollRaw, err := pollLogin(mustJSON(authLoginPollRequest{Provider: providerID, State: state, Metadata: session.Metadata, Host: hostConfigSummary{AuthDir: session.AuthDir}}))
 	if err != nil {
 		return managementJSON(http.StatusBadGateway, map[string]any{"error": "oauth_poll_failed", "message": err.Error()}), nil

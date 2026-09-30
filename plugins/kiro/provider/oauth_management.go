@@ -59,6 +59,66 @@ func handleBrowserCallbackManagement(req managementRequest) ([]byte, error) {
 	})
 }
 
+// pastedCallbackStatus tells a caller what consumePastedCallback did.
+type pastedCallbackStatus int
+
+const (
+	// pastedCallbackAbsent: the request body carried no callback_url.
+	pastedCallbackAbsent pastedCallbackStatus = iota
+	// pastedCallbackAccepted: the callback was stored; the caller should carry
+	// on with its normal poll to finish the login and persist the credential.
+	pastedCallbackAccepted
+	// pastedCallbackDone: the callback could not be accepted (or needs another
+	// step); the returned response is final.
+	pastedCallbackDone
+)
+
+// consumePastedCallback handles a callback URL pasted into the panel.
+//
+// v0.5.2: this used to be a metadata copy — the panel POSTed callback_url,
+// the handler wrote it into session metadata and returned 200, and nothing in
+// the repo ever read that key. The pasted authorization code was silently
+// discarded: pollBrowserLoginRequest only consults the in-memory session
+// callback (filled by storeBrowserCallback) and the on-disk .oauth file, so the
+// login sat at "pending" forever and no credential was ever produced.
+//
+// Routing the pasted URL through processBrowserCallback reuses the exact
+// validation + persistence path the resource route takes, so both entry points
+// behave identically.
+func consumePastedCallback(req managementRequest) ([]byte, pastedCallbackStatus) {
+	var input struct {
+		CallbackURL string `json:"callback_url"`
+	}
+	if len(req.Body) == 0 || json.Unmarshal(req.Body, &input) != nil || strings.TrimSpace(input.CallbackURL) == "" {
+		return nil, pastedCallbackAbsent
+	}
+	callbackURL, errParse := url.Parse(strings.TrimSpace(input.CallbackURL))
+	if errParse != nil || callbackURL.Scheme == "" || callbackURL.Host == "" {
+		return managementJSON(http.StatusBadRequest, map[string]any{"error": "invalid_callback"}), pastedCallbackDone
+	}
+	outcome, errCallback := processBrowserCallback(callbackURL, req.HostCallbackID)
+	if errCallback != nil {
+		return browserCallbackBody(errCallback), pastedCallbackDone
+	}
+	if outcome.OAuthError {
+		return managementJSON(http.StatusBadRequest, map[string]any{
+			"error": "oauth_error", "message": "Kiro authorization failed: " + outcome.State,
+		}), pastedCallbackDone
+	}
+	if outcome.Status == "continue" {
+		// 组织/Builder ID 登录：回调只完成第一步，用户还需访问验证地址。
+		// 资源路由走 302 跳转，这里没有浏览器可跳，必须把地址回给面板。
+		return managementJSON(http.StatusOK, map[string]any{
+			"status":     "continue",
+			"state":      outcome.State,
+			"url":        outcome.URL,
+			"user_code":  outcome.UserCode,
+			"expires_at": outcome.ExpiresAt.Format(time.RFC3339),
+		}), pastedCallbackDone
+	}
+	return nil, pastedCallbackAccepted
+}
+
 func handleBrowserCallbackResource(req managementRequest) ([]byte, error) {
 	if !strings.EqualFold(req.Method, http.MethodGet) {
 		return resourceCallbackPage(http.StatusMethodNotAllowed, "Unsupported request", "This Kiro callback only accepts GET requests.")
@@ -247,7 +307,10 @@ func browserCallbackError(status int, code, message string) ([]byte, error) {
 	})
 }
 
-func browserCallbackErrorResponse(err error) ([]byte, error) {
+// browserCallbackBody renders the envelope for a failed callback. It is split
+// out from browserCallbackErrorResponse so callers that already have a
+// (body, status) shape of their own can reuse the same mapping.
+func browserCallbackBody(err error) []byte {
 	status := pluginHTTPStatus(err)
 	if status == 0 {
 		status = http.StatusInternalServerError
@@ -258,7 +321,12 @@ func browserCallbackErrorResponse(err error) ([]byte, error) {
 		code = typed.Code
 		message = typed.Error()
 	}
-	return browserCallbackError(status, code, message)
+	body, _ := browserCallbackError(status, code, message)
+	return body
+}
+
+func browserCallbackErrorResponse(err error) ([]byte, error) {
+	return browserCallbackBody(err), nil
 }
 
 func resourceCallbackError(err error) ([]byte, error) {

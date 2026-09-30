@@ -56,21 +56,9 @@ func handleConsoleOAuthStatus(req managementRequest) ([]byte, error) {
 		return managementJSON(http.StatusNotFound, map[string]any{"error": "unknown_state"}), nil
 	}
 	if req.Method == http.MethodPost {
-		var input struct {
-			CallbackURL string `json:"callback_url"`
+		if raw, outcome := consumePastedCallback(req); outcome == pastedCallbackDone {
+			return raw, nil
 		}
-		if len(req.Body) == 0 || json.Unmarshal(req.Body, &input) != nil || strings.TrimSpace(input.CallbackURL) == "" {
-			return managementJSON(http.StatusBadRequest, map[string]any{"error": "invalid_callback"}), nil
-		}
-		updated := make(map[string]any, len(metadata)+1)
-		for key, value := range metadata {
-			updated[key] = value
-		}
-		updated["callback_url"] = strings.TrimSpace(input.CallbackURL)
-		consoleOAuthSessions.Lock()
-		consoleOAuthSessions.metadata[state] = updated
-		consoleOAuthSessions.Unlock()
-		metadata = updated
 	}
 	raw, err := pollLogin(mustJSON(authLoginPollRequest{Provider: providerID, State: state, Metadata: metadata}))
 	if err != nil {
