@@ -49,23 +49,58 @@ CGO_ENABLED=1 go mod verify
 
 ## 想真正跑一次 c-shared 链接：走 WSL
 
-Windows 侧没有 C 工具链，但如果有可用的 WSL 发行版，可以在里面补 Go + gcc 跑通 CI 的
-构建步骤（`CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -buildmode=c-shared -o <id>.so .`），
-得到真实的 ELF 动态库，并顺带验证「按 `<id>.so` 打包后 zip 根级只有一个 `.so`」这条宿主契约。
+Windows 侧没有 C 工具链，但 WSL 里可以跑通 CI 的构建步骤：
 
-要点：
+```bash
+cd /mnt/d/Varc/code-repos/cpa-plugins/plugins/<id>
+CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -buildmode=c-shared -o /tmp/<id>.so .
+```
 
-- 用 `wsl.exe -d <发行版> -e /bin/sh <脚本>` 执行；脚本写到 `/mnt/d/...` 下，**产物写 `/tmp`**，
-  不要落进仓库树（`.so`/`.h`/`.zip` 都不该被提交）。
-- `wsl.exe` 的 stdout 经管道会变成 UTF-16LE；让脚本内部 `exec > <文件>` 落盘再读更省事。
-- `linux/arm64` 可用 `zig cc -target aarch64-linux-musl` 交叉编译。
-- `darwin/arm64` 本机仍验不了：zig 能产 Mach-O，但链接需要 macOS SDK，只能交给 CI 的 macos-14。
+得到真实的 ELF 动态库，顺带验证「按 `<id>.so` 打包后 zip 根级只有一个 `.so`」这条宿主契约。
+
+### 环境准备（Ubuntu-24.04）
+
+发行版自带 `gcc`/`make`/`zip`/`curl`，只缺 Go。**apt 的 Go 版本过旧**（不满足
+`go 1.26.0`），用官方 tarball；无密码 sudo 时装到 `/usr/local`，否则装用户级 `~/.local`：
+
+```bash
+curl -fsSLO https://go.dev/dl/go1.27.1.linux-amd64.tar.gz
+mkdir -p ~/.local && tar -C ~/.local -xzf go1.27.1.linux-amd64.tar.gz
+echo 'export PATH=$PATH:$HOME/.local/go/bin' >> ~/.bashrc
+rm go1.27.1.linux-amd64.tar.gz
+go version   # go1.27.1 linux/amd64
+```
+
+首次构建要拉全部依赖，kiro/qoder/workbuddy 的依赖较大（含 `modernc.org/sqlite`），
+耗时可观，建议后台跑。
+
+### 从 Windows 侧驱动 WSL 的两个坑
+
+- **Git Bash 会改写路径**：`wsl.exe -e /bin/bash` 里的 `/bin/bash` 会被 MSYS 转成
+  `D:/.../usr/bin/bash` 导致 `execvpe ... failed`。加 `MSYS_NO_PATHCONV=1` 前缀即可。
+- **`wsl.exe` 的 stdout 经管道会变成 UTF-16LE**：让脚本内部 `exec > /mnt/d/.../<file>`
+  自己落盘，再从 Windows 读那个文件，比解析管道输出省事得多。
+
+### 产物别落进仓库树
+
+脚本与产物都写到 `/mnt/d/...` 下的临时目录或 `/tmp`，**不要落进仓库树**——
+`.so`/`.h`/`.zip` 都不该被提交。跑完记得清掉，并确认 `git status` 干净。
+
+### 其他平台
+
+- `linux/arm64`：可用 `zig cc -target aarch64-linux-musl` 交叉编译（Alpine 无 aarch64
+  交叉 gcc，zig 是可行替代）。
+- `darwin/arm64`：本机仍验不了——zig 能产 Mach-O，但链接需要 macOS SDK
+  （`unable to find dynamic system library 'resolv'`），只能交给 CI 的 macos-14。
 
 ## 本机验不了什么
 
-无缓存宿主、无 git remote（Windows 侧也无 C 工具链，除非按上一节走 WSL），因此下列只能在
-CI 侧完成，汇报时应标注「未本地执行」而非「已通过」：`darwin/arm64` 的 c-shared 产物、
-`scripts/dev-sandbox.go` 的沙箱断言、`release.go publish`（需要 remote）。
+按上一节配好 WSL 后，`linux/amd64` 与 `linux/arm64` 的 c-shared 产物可以本地验。下列仍
+只能在 CI 侧完成，汇报时应标注「未本地执行」而非「已通过」：
+
+- `darwin/arm64` 的 c-shared 产物（需 macOS SDK）
+- `scripts/dev-sandbox.go` 的沙箱断言（需缓存宿主二进制）
+- `release.go publish`（需 git remote）
 
 ## 相关
 
