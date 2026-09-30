@@ -1,0 +1,4 @@
+{
+  "bump": "patch",
+  "note": "修正设备绑定告警的归因错误: 自 v0.12.65 起签到族请求 (status/claim) 一律携带每轮新生成的随机 16 位 x-device-id, 既不发送服务端 BoundDeviceID 也不发送本凭证 deviceId, 故 device_match=false 不会诱发签到 9074 —— 旧文案「签到风控高危，建议退出重新登录换绑设备」与实现矛盾。面板徽标改为「绑定不一致」并说明仅影响积分查询等 ug/pay 族请求画像、不影响签到; 卡片设备绑定行由红色 err 降为 warn, 并排显示服务端绑定值与本凭证 deviceId 便于人工比对; /accounts 新增 device_id 字段。日志同步分级: 仅登录态失效 (is_login=false) 保留 warning, 绑定值不一致降为诊断 note。纯提示与诊断信息变更, 签到/请求行为不变。"
+}

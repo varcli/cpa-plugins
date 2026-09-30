@@ -229,6 +229,9 @@ type traeAccount struct {
 	// v0.12.32: 凭证文件是否携带 deviceId。官方 claim 要求 x-device-id 携带
 	// 真实绑定 did，缺失时服务端可能静默不入账 —— 面板徽标告警用。
 	DeviceIDSet bool `json:"device_id_set"`
+	// v0.12.66: 本凭证的 deviceId，供面板与 bound_device_id 并排比对
+	// （不一致时用户可自行判断是否手工对齐）。设备指纹非密钥，管理面板可见。
+	DeviceID string `json:"device_id,omitempty"`
 	// v0.12.44: 凭证谱系 + CheckLogin 探测的服务端绑定设备状态。
 	Platform         string `json:"platform,omitempty"`           // platformId（trae_solo_cn 等）
 	BoundDeviceID    string `json:"bound_device_id,omitempty"`    // 服务端绑定的 deviceId
@@ -314,6 +317,7 @@ func buildDashboard() map[string]any {
 		acct.Nickname = sa.Account.Nickname
 		acct.Variant = sa.Variant
 		acct.DeviceIDSet = strings.TrimSpace(sa.Auth.DeviceID) != ""
+		acct.DeviceID = sa.Auth.DeviceID
 		// v0.12.44: 凭证自证谱系 + 缓存的 CheckLogin 绑定快照。
 		acct.Platform = upstream.PlatformIDFor(sa.Variant)
 		if v, ok := accountCache.Load(f.AuthIndex); ok {
@@ -939,8 +943,11 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 		}
 		// v0.12.44: CheckLogin —— 登录态 + 服务端绑定设备探测（best-effort，
 		// 刷新链路亦如此）。
-		// BoundDeviceID 与本账号 deviceId 不一致 / DeviceBindStatus != BOUND /
-		// IsLogin=false → 签到风控高危（9074 高危画像），日志告警 + 面板亮标。
+		// v0.12.66 归因修正：v0.12.65 起签到族请求一律携带每轮新生成的随机
+		// 16 位 x-device-id（upstream.NewCheckinDeviceID），既不发送服务端绑定值
+		// 也不发送本凭证 deviceId —— BoundDeviceID 与本账号 deviceId 不一致
+		// 不再预示签到 9074，仅为 ug/pay 族请求画像的诊断信息（面板标黄）。
+		// IsLogin=false 才是签到相关的硬信号（面板标红）。
 		bind := &bindStatus{}
 		if cl, clErr := upstreamClient.CheckLogin(a); clErr == nil && cl != nil {
 			bind.Known = true
@@ -954,8 +961,14 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 				entry["device_bind_status"] = cl.DeviceBindStatus
 				entry["device_match"] = bind.DeviceMatch
 			}
-			if !cl.IsLogin || (cl.DeviceBindStatus != "" && cl.DeviceBindStatus != "BOUND") || (cl.BoundDeviceID != "" && cl.BoundDeviceID != a.DeviceID) {
-				log.Printf("checkin device-bind warning uid=%s: isLogin=%v bindStatus=%q bound=%q local=%q — 绑定不一致为 9074 风控高危，建议面板退出重新登录以重绑设备", sa.Account.UID, cl.IsLogin, cl.DeviceBindStatus, cl.BoundDeviceID, a.DeviceID)
+			// v0.12.66: 日志分级。绑定值不一致自 v0.12.65 起与签到无关（签到族
+			// 一律发送每轮新生成的随机 16 位 x-device-id，见
+			// upstream.NewCheckinDeviceID），故不再套用"9074 高危"措辞，只作诊断；
+			// 真正影响签到的是登录态失效。
+			if !cl.IsLogin {
+				log.Printf("checkin device-bind warning uid=%s: CheckLogin 报告登录态失效 — 建议面板退出重新登录", sa.Account.UID)
+			} else if cl.DeviceBindStatus != "" && cl.DeviceBindStatus != "BOUND" || (cl.BoundDeviceID != "" && cl.BoundDeviceID != a.DeviceID) {
+				log.Printf("checkin device-bind note uid=%s: bindStatus=%q bound=%q local=%q — 仅影响 ug/pay 族请求画像，不影响签到", sa.Account.UID, cl.DeviceBindStatus, cl.BoundDeviceID, a.DeviceID)
 			}
 		} else if clErr != nil {
 			entry["checklogin_error"] = clErr.Error()

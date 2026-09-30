@@ -429,15 +429,20 @@ function card(a){
     // v0.12.32: 官方 claim 要求 x-device-id（真实绑定 did）；凭证缺 deviceId 时
     // 服务端可能 code=0 但静默不入账 —— 徽标告警。
     ((a.device_id_set===false&&!isIntl)?`<span class="badge cooling" title="凭证文件缺少 deviceId，签到可能无法到账；建议用插件 OAuth 重新登录或重新导入带 deviceId 的凭证">缺设备ID</span>`:"")+
-    // v0.12.44: CheckLogin 探测的服务端绑定设备健康。device_match=false /
-    // bindStatus≠BOUND / is_login=false → 签到风控高危（9074 画像），亮标建议重登。
+    // v0.12.44: CheckLogin 探测的服务端绑定设备健康。
+    // v0.12.66 文案修正：签到族请求（status/claim）自 v0.12.65 起一律携带每轮
+    // 新生成的 16 位随机 x-device-id（见 upstream.NewCheckinDeviceID），既不发送
+    // 服务端绑定值、也不发送凭证 deviceId —— 故 device_match=false 不会诱发签到
+    // 9074，旧文案"签到风控高危，建议换绑设备"是错的。绑定值只影响 ug/pay 族
+    // （积分查询等）的请求画像；真正需要重登的只有 is_login=false。
     ((()=>{ if(isIntl)return "";
       const bindBad=(a.device_match===false)||(a.device_bind_status&&a.device_bind_status!=="BOUND")||(a.is_login===false);
       if(!bindBad)return "";
-      const tip=(a.is_login===false)?"CheckLogin 报告登录态已失效；建议退出重新登录"
-        :((a.device_bind_status&&a.device_bind_status!=="BOUND")?("服务端设备绑定状态异常（"+a.device_bind_status+"）；建议退出重新登录")
-        :("服务端绑定设备（"+(a.bound_device_id||"?")+"）与本凭证 deviceId 不一致 —— 签到 9074 风控高危；建议退出重新登录换绑设备"));
-      return `<span class="badge cooling" title="${escAttr(tip)}">绑定异常</span>`; })())+
+      const tip=(a.is_login===false)?"CheckLogin 报告登录态已失效，建议退出重新登录"
+        :((a.device_bind_status&&a.device_bind_status!=="BOUND")?("服务端设备绑定状态异常（"+a.device_bind_status+"）；建议退出重新登录换绑设备")
+        :("服务端绑定设备（"+(a.bound_device_id||"?")+"）与本凭证 deviceId 不一致。不影响签到（签到用每轮新随机设备号）；仅影响积分查询等 ug/pay 族请求画像，重登后绑定值也未必与本凭证相同"));
+      const label=(a.is_login===false)?"登录失效":"绑定不一致";
+      return `<span class="badge cooling" title="${escAttr(tip)}">${label}</span>`; })())+
     `<span class="${planBadgeClass(plan)}">${esc(plan||"-")}</span>`;
   const btnClass=checkedIn?"done":"sec";
   const btnText=checkedIn?"已签到":"签到";
@@ -460,9 +465,12 @@ function card(a){
        // 非钱包/可花余额；模型调用扣的是上方积分池，不扣这个。
        +((wallet!=null&&(wallet>0||checkedIn))?`<div class="row"><span class="k">签到奖励</span><span class="v">${wallet} 积分${checkedIn?" · 今日已签":" · 签到成功后入池"}</span></div>`:"")
        // v0.12.44: CheckLogin 服务端绑定设备（探测成功才渲染）。
-       +((a.bound_device_id!=null||a.device_match!=null)?(()=>{ const cls=(a.device_match===false||a.is_login===false)?"err":"";
-          const st=(a.device_match===true)?"匹配":((a.device_match===false)?"与本凭证不一致":"未比对");
-          return `<div class="row"><span class="k">设备绑定</span><span class="v ${cls}">${esc((a.device_bind_status||"UNKNOWN")+" · "+(a.bound_device_id||"-")+" · "+st)}</span></div>`; })():""));
+       // v0.12.66: 不一致改用 warn 而非 err —— 签到不读绑定值（每轮新随机设备号），
+       // 红色告警过重；同时并排显示本凭证 deviceId，便于用户自行判断是否手工对齐。
+       +((a.bound_device_id!=null||a.device_match!=null)?(()=>{ const cls=(a.device_match===false)?"warn":((a.is_login===false)?"err":"");
+          const st=(a.device_match===true)?"匹配":((a.device_match===false)?"与本凭证不一致（不影响签到）":"未比对");
+          const local=a.device_id_set===false?"凭证无 deviceId":(a.device_id||"-");
+          return `<div class="row"><span class="k">设备绑定</span><span class="v ${cls}">${esc((a.device_bind_status||"UNKNOWN")+" · 服务端 "+(a.bound_device_id||"-")+" · 本凭证 "+local+" · "+st)}</span></div>`; })():""));
   return `<div class="card" data-uid="${escAttr(a.uid)}" data-auth="${escAttr(a.auth_index)}">
   <h2>${esc(a.nickname||a.label||a.name)} <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${badges}</span></h2>
   <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
