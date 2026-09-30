@@ -150,7 +150,7 @@
       "name": "Trae",
       "description": "Trae unified provider for CLIProxyAPI: Trae Code CN (api.trae.cn inline_chat), Trae SOLO CN (solo_work_lite) and Trae Intl (api.marscode.com Web SOLO) in one plugin, per-variant routing, real-time SSE, daily check-in, auto-adopts legacy trae-cn / trae-solo-cn / trae-intl auth files.",
       "author": "varcli",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "repository": "https://github.com/varcli/cpa-plugins",
       "homepage": "https://github.com/varcli/cpa-plugins/tree/main/plugins/trae",
       "license": "MIT",
@@ -167,21 +167,21 @@
             "goos": "darwin",
             "sha256": "",
             "size": 0,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.1.0/trae_0.1.0_darwin_arm64.zip"
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.1.1/trae_0.1.1_darwin_arm64.zip"
           },
           {
             "goarch": "amd64",
             "goos": "linux",
             "sha256": "",
             "size": 0,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.1.0/trae_0.1.0_linux_amd64.zip"
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.1.1/trae_0.1.1_linux_amd64.zip"
           },
           {
             "goarch": "arm64",
             "goos": "linux",
             "sha256": "",
             "size": 0,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.1.0/trae_0.1.0_linux_arm64.zip"
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.1.1/trae_0.1.1_linux_arm64.zip"
           }
         ],
         "type": "direct"
