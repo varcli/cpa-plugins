@@ -8,22 +8,22 @@
       {
         "goarch": "arm64",
         "goos": "darwin",
-        "sha256": "",
-        "size": 0,
+        "sha256": "af13f6c4a94596f6fc97801a72a5c4814051434214b9d315e44c1f3c86f90a0d",
+        "size": 3847618,
         "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.5.0/qoder_0.5.0_darwin_arm64.zip"
       },
       {
         "goarch": "amd64",
         "goos": "linux",
-        "sha256": "",
-        "size": 0,
+        "sha256": "77abe849300680d7fa6ee5a14a5998d8fa46210142e5e8da4a44ef6fbbe5af39",
+        "size": 7483680,
         "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.5.0/qoder_0.5.0_linux_amd64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "linux",
-        "sha256": "",
-        "size": 0,
+        "sha256": "c1eecddd831abd4a43fb0276d1bd0c445ae2265ee9b21f7192884053924a7a11",
+        "size": 6822748,
         "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.5.0/qoder_0.5.0_linux_arm64.zip"
       }
     ],
