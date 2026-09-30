@@ -1,4 +1,0 @@
-{
-  "bump": "patch",
-  "note": "修复面板粘贴 OAuth 回调链接后登录卡死、始终拿不到凭据的问题。此前 POST /oauth/login/status 收到 callback_url 只是把它写回会话 metadata 就返回 200, 而全仓没有任何代码读这个键: 粘贴进来的授权 code 被静默丢弃, 轮询侧只认内存 session.Callback (由资源路由 storeBrowserCallback 填充) 与磁盘 .oauth 文件, 于是登录永远停在 pending。现改为把粘贴的链接送进 processBrowserCallback —— 与回调资源路由完全同一条校验 (state 匹配、过期、redirect 匹配) 与落盘路径, 两条入口行为一致; 组织/Builder ID 账号的两步登录会把验证地址与用户码回给面板并自动打开。同一处缺口也存在于 POST /oauth/relogin/status (重新登录), 已一并复用同一消费逻辑修复; 面板据此按当前登录类型把回调提交到对应端点。"
-}
