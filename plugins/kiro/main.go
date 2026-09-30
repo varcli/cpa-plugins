@@ -81,6 +81,14 @@ import (
 
 var hostAPI *C.cliproxy_host_api
 
+// pluginVersionLiteral is the single `Version: "x.y.z"` literal the release
+// tooling rewrites (scripts/release.go globs plugins/<id>/*.go at the top level
+// only, and requires exactly one match). It is declared here and pushed into the
+// provider at init so `release.go version` can find and bump it.
+var pluginVersionLiteral = struct {
+	Version string
+}{Version: "0.1.0"}
+
 func main() {}
 
 // -----------------------------------------------------------------------------
@@ -94,6 +102,7 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 	}
 	hostAPI = host
 	C.store_host_api(host)
+	provider.SetVersion(pluginVersionLiteral.Version)
 	provider.SetHostCaller(callHost)
 	plugin.abi_version = C.uint32_t(pluginabi.ABIVersion)
 	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)

@@ -84,7 +84,9 @@ var hostAPI *C.cliproxy_host_api
 // tooling rewrites (scripts/release.go globs plugins/<id>/*.go at the top level
 // only, and requires exactly one match). It is declared here and pushed into the
 // provider at init so `release.go version` can find and bump it.
-var pluginVersionLiteral = "0.1.0"
+var pluginVersionLiteral = struct {
+	Version string
+}{Version: "0.1.0"}
 
 // pluginConfigFields is the plugin's declared configuration surface. It lives at
 // the top level for the same reason as the version literal: scripts/dev-sandbox.go
@@ -115,7 +117,7 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 	}
 	hostAPI = host
 	C.store_host_api(host)
-	provider.SetVersion(pluginVersionLiteral)
+	provider.SetVersion(pluginVersionLiteral.Version)
 	provider.SetConfigFields(pluginConfigFields)
 	provider.SetHostCaller(callHost)
 	plugin.abi_version = C.uint32_t(pluginabi.ABIVersion)

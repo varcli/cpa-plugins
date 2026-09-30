@@ -14,6 +14,20 @@ import (
 
 var configValue atomic.Value
 
+// pluginVersion is reported in the registration metadata. The literal lives in
+// main.go because the release tooling rewrites the single `Version: "x.y.z"`
+// occurrence in plugins/<id>/*.go at the top level only (scripts/release.go);
+// keeping it out of this subpackage is what lets `release.go version` find and
+// bump it.
+var pluginVersion = "0.0.0"
+
+// SetVersion records the plugin version reported in the registration metadata.
+func SetVersion(version string) {
+	if strings.TrimSpace(version) != "" {
+		pluginVersion = version
+	}
+}
+
 var (
 	hostHTTPDoCall = func(req hostHTTPRequest) (hostHTTPResponse, error) {
 		return kirorpc.DoWithCaller(callHostCall, req)
@@ -183,7 +197,7 @@ func registration(raw []byte) ([]byte, error) {
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             "Kiro",
-			Version:          "0.1.0",
+			Version:          pluginVersion,
 			Author:           "varcli",
 			GitHubRepository: "https://github.com/varcli/cpa-plugins",
 			Logo:             pluginLogoURL,

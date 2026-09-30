@@ -1,0 +1,1 @@
+{"bump": "patch", "note": "修复发布工具无法识别版本字面量: 顶层改为 release.go 约定的 `Version: \"x.y.z\"` 结构。此前顶层只有 pluginVersionLiteral 赋值, 不含 Version 键, scripts/release.go version 匹配 0 处直接报错, 该插件从建立起就无法产出版本。"}
