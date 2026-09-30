@@ -393,6 +393,7 @@ function bindCardActions(root){
       if(act==="checkin") checkin(idx, uid, ev.currentTarget);
       else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
       else if(act==="release") releaseCooldown(idx, uid, ev.currentTarget);
+      else if(act==="align") alignDevice(idx, ev.currentTarget);
     });
   });
 }
@@ -454,6 +455,10 @@ function card(a){
   const refreshBtn=isIntl?"":`<button class="sec" data-action="refresh" data-auth-index="${escAttr(a.auth_index)}"${uidAttr} title="查询实时积分">刷新积分</button>`;
   // v0.12.67: 配额冻结手动解除（池冷却徽标在场即可点；禁用态不在此列，重登才是解法）。
   const releaseBtn=(!isIntl&&cooling)?`<button class="sec" data-action="release" data-auth-index="${escAttr(a.auth_index)}"${uidAttr} title="清除配额耗尽冻结；宿主侧 30 分钟模型冷却同步走 CPA「重置配额」">解除冷却</button>`:"";
+  // v0.12.66: 设备绑定对齐 —— 仅在探测到不一致且服务端有绑定值时可点。
+  // 把凭证 auth.deviceId 写成服务端 BoundDeviceID（只影响 ug/pay 族请求画像，
+  // 签到用每轮新随机设备号，不受影响）。不改写任何其他凭证字段。
+  const alignBtn=(!isIntl&&a.device_match===false&&a.bound_device_id)?`<button class="sec" data-action="align" data-auth-index="${escAttr(a.auth_index)}"${uidAttr} title="把本凭证 deviceId 写成服务端绑定值（${escAttr(a.bound_device_id)}）。仅影响积分查询等 ug/pay 族请求画像；签到不受影响。">对齐设备绑定</button>`:"";
   const bodyHTML=isIntl
     ? ((a.token_expiry?`<div class="row"><span class="k">Token 到期</span><span class="v">${esc(String(a.token_expiry).replace('T',' ').replace('Z',' UTC'))}</span></div>`:"")
        +(a.region?`<div class="row"><span class="k">区域</span><span class="v">${esc(a.region)}</span></div>`:"")
@@ -477,7 +482,7 @@ function card(a){
   ${bodyHTML}
   ${a.error?`<div class="row"><span class="k">错误</span><span class="v err">${esc(a.error)}</span></div>`:""}
   ${pool.reason&&!cooling?`<div class="row"><span class="k">池状态</span><span class="v warn">${esc(pool.reason)}</span></div>`:""}
-  ${(refreshBtn||actionHTML||releaseBtn)?`<div class="actions">${refreshBtn}${actionHTML}${releaseBtn}</div>`:""}
+  ${(refreshBtn||actionHTML||releaseBtn||alignBtn)?`<div class="actions">${refreshBtn}${actionHTML}${releaseBtn}${alignBtn}</div>`:""}
   </div>`;
 }
 function applyCreditsResult(a, res){
@@ -916,6 +921,22 @@ async function releaseCooldown(idx, uid, btn){
     toast("解除请求失败","err",e.message||String(e));
     busy(btn,false);
   }
+}
+async function alignDevice(idx, btn){
+  // v0.12.66: 对齐设备绑定 —— 把本凭证 deviceId 写成服务端 CheckLogin 报告的
+  // BoundDeviceID。只影响积分查询等 ug/pay 族请求画像；签到族请求每轮新生成
+  // 随机设备号，不受影响。写盘由后端 mergeAuthStorage 完成（保留设备密钥对）。
+  if(!confirm("把本凭证的 deviceId 改写为服务端绑定值？\n\n仅影响积分查询等 ug/pay 族请求画像，不影响签到。改写后该账号的设备指纹与官方绑定一致。")) return;
+  busy(btn,true);
+  try{
+    const d=await api("/device/align",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:idx})});
+    if(!d.success){ toast("对齐失败","err",d.error||"未知错误"); busy(btn,false); return; }
+    if(d.aligned===false){ toast("无需对齐","ok",d.message||"已一致"); }
+    else{ toast("已对齐设备绑定","ok",(d.previous?("deviceId "+d.previous+" → "):"")+d.device_id); }
+    await load(false);
+  }catch(e){
+    toast("对齐请求失败","err",e.message||String(e));
+  }finally{busy(btn,false)}
 }
 async function refreshCredits(idx, btn){
   busy(btn,true);

@@ -74,6 +74,7 @@ CGO_ENABLED=1 go build -buildmode=c-shared -o trae.so .
 | `GET /status` | 账号池状态：每个账号的冷却/禁用原因 |
 | `POST /release` | 手动解除额度耗尽的冻结（1005/4008 / scan-zero） |
 | `POST /import` | 导入 Trae 凭据 JSON（嵌套或扁平）到宿主 auth store |
+| `POST /device/align` | 把某账号（`auth_index`）凭证的 `auth.deviceId` 对齐为服务端 `BoundDeviceID`；仅影响积分查询等 ug/pay 族请求画像，签到不受影响 |
 | `GET /intl/accounts` | Trae Intl：列出账号（uid、昵称、token 过期时间） |
 | `GET /intl/status` | Trae Intl：插件状态 |
 | `POST /intl/import` | Trae Intl：导入凭据 JSON 到宿主 auth store |
@@ -82,6 +83,8 @@ CGO_ENABLED=1 go build -buildmode=c-shared -o trae.so .
 ### 面板
 
 浏览器访问 `/v0/resource/plugins/trae/panel`（宿主服务插件声明的 resource 页面）。
+
+账号卡片上的「设备绑定」行来自 `CheckLogin` 探测：服务端绑定设备 `BoundDeviceID`、绑定状态（`BOUND` 等）以及与本凭证 `deviceId` 是否一致。**绑定值不一致不影响签到**——签到族请求（`checkin_credits/status`、`/claim`）每轮都携带新生成的随机 16 位 `x-device-id`，既不发送服务端绑定值也不发送本凭证 `deviceId`；不一致只影响积分查询等 ug/pay 族的请求画像。需要对齐时点卡片上的「对齐设备绑定」（仅在检测到不一致且服务端有绑定值时出现），插件会把凭证的 `auth.deviceId` 改写为服务端绑定值——绑定值一律由服务端实时取回，其余凭证字段（设备密钥对等）原样保留。若卡片显示「登录失效」，则需要退出重新登录。
 
 ## 模型
 

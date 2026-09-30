@@ -95,6 +95,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodGet, Path: base + "/status", Description: "Account-pool state: cooling / disabled reasons per account."},
 			{Method: http.MethodPost, Path: base + "/release", Description: "Manually release a quota-exhaustion freeze (1005/4008 / scan-zero) for one account (uid, or auth_index fallback). Pair with CPA reset-quota for the host-side 30-min model cooldown."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import Trae credential JSON (nested or flat) into host auth store."},
+			{Method: http.MethodPost, Path: base + "/device/align", Description: "Align one credential's auth.deviceId with the server-bound BoundDeviceID reported by CheckLogin (auth_index). Affects ug/pay request fingerprint only; check-in is unaffected (it sends a fresh random x-device-id per attempt)."},
 			{Method: http.MethodGet, Path: base + "/intl/accounts", Description: "Trae Intl: list accounts with uid, nickname, and token expiry."},
 			{Method: http.MethodGet, Path: base + "/intl/status", Description: "Trae Intl: plugin status."},
 			{Method: http.MethodPost, Path: base + "/intl/import", Description: "Trae Intl: import credential JSON into host auth store."},
@@ -164,6 +165,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCooldownRelease(req)))
 	case req.Method == http.MethodPost && path == base+"/import":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportAuth(req)))
+	case req.Method == http.MethodPost && path == base+"/device/align":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleDeviceAlign(req)))
 	case req.Method == http.MethodGet && path == base+"/models/groups":
 		status, payload := handleModelGroupsQuery(req)
 		return okEnvelope(mgmtJSONResponse(status, payload))
@@ -409,6 +412,92 @@ func handleCooldownRelease(req pluginapi.ManagementRequest) map[string]any {
 		"released": true,
 		"uid":      uid,
 		"status":   st,
+	}
+}
+
+// handleDeviceAlign v0.12.66 — 把凭证 auth.deviceId 对齐为服务端 CheckLogin
+// 报告的 BoundDeviceID。
+//
+// 背景：BoundDeviceID 是本账号在服务端的绑定设备指纹，只影响 ug/pay 族
+// （积分查询等）的请求画像；签到族请求自 v0.12.65 起一律发送每轮新生成的
+// 随机 16 位 x-device-id，与绑定值无关，故本操作不改变签到行为。
+//
+// 用途：从别处导入的凭证（如官方客户端导出）deviceId 与绑定值不一致时，
+// 手工对齐可让 ug/pay 族请求画像与绑定一致。
+//
+// 安全约束（按序执行，任一失败即中止）：
+//  1. 只接受 bound_device_id 由本服务 CheckLogin 实时取回，不接受调用方传入
+//     —— 防止任意改写凭证设备指纹；
+//  2. 拒绝空值与"服务端未报告绑定"（BoundDeviceID=""）的情况；
+//  3. 写入用 mergeAuthStorage（只覆盖 deviceId 等固定键，devicePublicKey /
+//     devicePrivateKey / exchangeResponse 等其余字段原样保留）。
+func handleDeviceAlign(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		AuthIndex string `json:"auth_index"`
+	}
+	if len(req.Body) > 0 {
+		_ = json.Unmarshal(req.Body, &body)
+	}
+	authIndex := strings.TrimSpace(body.AuthIndex)
+	if authIndex == "" {
+		return map[string]any{"success": false, "error": "auth_index required"}
+	}
+	sa, err := hostAuthGet(authIndex)
+	if err != nil {
+		return map[string]any{"success": false, "error": "load auth: " + err.Error()}
+	}
+	if upstream.IsIntlVariant(sa.Variant) {
+		return map[string]any{"success": false, "error": "Intl 账号不支持设备绑定对齐"}
+	}
+	a := hostAuthAsUpstream(sa)
+	// 服务端绑定值必须现取，不信任任何调用方输入。
+	cl, clErr := upstreamClient.CheckLogin(a)
+	if clErr != nil || cl == nil {
+		msg := "CheckLogin 探测失败，无法取得服务端绑定值"
+		if clErr != nil {
+			msg += ": " + clErr.Error()
+		}
+		return map[string]any{"success": false, "error": msg}
+	}
+	bound := strings.TrimSpace(cl.BoundDeviceID)
+	if bound == "" {
+		return map[string]any{"success": false, "error": "服务端未报告绑定设备（BoundDeviceID 为空），无法对齐"}
+	}
+	if bound == strings.TrimSpace(a.DeviceID) {
+		return map[string]any{"success": true, "aligned": false, "device_id": bound, "message": "已一致，无需修改"}
+	}
+	old := a.DeviceID
+	a.DeviceID = bound
+	// 取原始凭证字节做 merge（保留设备密钥对与 parity 字段）。
+	raw, rawErr := hostAuthGetRaw(authIndex)
+	if rawErr != nil {
+		return map[string]any{"success": false, "error": "load raw auth: " + rawErr.Error()}
+	}
+	name := credentialFileName(a.Variant, a.UID)
+	if files, listErr := hostAuthList(); listErr == nil {
+		for _, f := range files {
+			if f.AuthIndex == authIndex {
+				if n := strings.TrimSpace(f.Name); n != "" {
+					name = n
+				}
+				break
+			}
+		}
+	}
+	if errSave := hostAuthSave(name, mergeAuthStorage(raw, a)); errSave != nil {
+		return map[string]any{"success": false, "error": "persist: " + errSave.Error()}
+	}
+	log.Printf("device-align uid=%s: deviceId %q -> %q (服务端绑定值), file=%s", a.UID, old, bound, name)
+	// 失效该账号的绑定快照缓存，下一次 /credits 重新探测即可显示"匹配"。
+	accountCache.Delete(authIndex)
+	return map[string]any{
+		"success":    true,
+		"aligned":    true,
+		"device_id":  bound,
+		"previous":   old,
+		"auth_index": authIndex,
+		"file":       name,
+		"message":    "凭证 deviceId 已对齐为服务端绑定值；积分查询等 ug/pay 族请求画像随之下次请求生效。签到行为不变。",
 	}
 }
 
