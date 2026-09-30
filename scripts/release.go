@@ -7,10 +7,14 @@ package main
 // 打包阶段暴露, 而不是等用户装不上才发现。
 //
 // 用法:
-//	go run scripts/release.go version --plugin <id>
+//	go run scripts/release.go version --plugin <id> [--version <v>]
 //	go run scripts/release.go pack    --plugin <id> [--version <v>] [--out dist]
 //	go run scripts/release.go record  --plugin <id> [--dist dist]
-//	go run scripts/release.go publish --plugin <id> [--dry-run] [--no-push]
+//	go run scripts/release.go publish --plugin <id> [--version <v>] [--dry-run] [--no-push]
+//
+// --version 是显式版本覆盖: 默认按变更集递增推导, 指定后直接用该版本号(仍要求有未消费的
+// 变更集, 且必须是 x.y.z)。用于"把若干插件统一到同一版本号"这类递增推导做不到的需求;
+// 版本号与产物地址、Go 字面量、标签仍由本脚本一处写出, 不走手改。
 //
 // publish 把发版收敛成一条命令: 预检 → version → 重建 registry → 门禁 → 提交 → 打标签 → 推送。
 // 顺序、命名与推送次序由脚本固定, 人只写变更集; 变更集已被消费(版本已 bump 但标签未推)时
@@ -79,6 +83,9 @@ func archiveName(id, version, goos, goarch string) string {
 
 var reGoVersionLiteral = regexp.MustCompile(`(\bVersion:\s*)"([0-9]+\.[0-9]+\.[0-9]+[^"]*)"`)
 
+// reSemver 校验 --version 显式覆盖值; 与 bumpVersion 的 x.y.z 约定一致。
+var reSemver = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+
 // ---------------- 变更集 ----------------
 
 type changeset struct {
@@ -131,6 +138,42 @@ func bumpVersion(current, bump string) (string, error) {
 	}
 }
 
+// compareSemver 按 x.y.z 逐段比较, 返回 -1/0/1。用于拦截 --version 的降级误操作。
+func compareSemver(a, b string) (int, error) {
+	parse := func(s string) ([3]int, error) {
+		var out [3]int
+		parts := strings.Split(strings.TrimPrefix(strings.TrimSpace(s), "v"), ".")
+		if len(parts) != 3 {
+			return out, fmt.Errorf("版本号 %q 不符合 x.y.z 语义化版本格式", s)
+		}
+		for i, p := range parts {
+			n, err := strconv.Atoi(p)
+			if err != nil || n < 0 {
+				return out, fmt.Errorf("版本号 %q 包含非法数字", s)
+			}
+			out[i] = n
+		}
+		return out, nil
+	}
+	av, err := parse(a)
+	if err != nil {
+		return 0, err
+	}
+	bv, err := parse(b)
+	if err != nil {
+		return 0, err
+	}
+	for i := 0; i < 3; i++ {
+		if av[i] != bv[i] {
+			if av[i] < bv[i] {
+				return -1, nil
+			}
+			return 1, nil
+		}
+	}
+	return 0, nil
+}
+
 // ---------------- 任务: version ----------------
 
 // versionPlan 是一次版本产出的前置计算: 变更集、当前版本与目标版本。
@@ -143,7 +186,7 @@ type versionPlan struct {
 	manifestPath   string
 }
 
-func planNextVersion(id string) (*versionPlan, error) {
+func planNextVersion(id string, overrideVersion string) (*versionPlan, error) {
 	changesetsDir := filepath.Join("plugins", id, "changesets")
 	dirInfo, err := os.Stat(changesetsDir)
 	if err != nil {
@@ -210,6 +253,23 @@ func planNextVersion(id string) (*versionPlan, error) {
 		return nil, fmt.Errorf("计算新版本号失败: %w", err)
 	}
 
+	// 显式覆盖: 用于递增推导到不了的版本号 (例如把多个插件统一到 0.5.0)。
+	// 仍要求存在未消费的变更集, 保证"改动留下过版本意图"的门禁不被绕过。
+	if v := strings.TrimSpace(overrideVersion); v != "" {
+		v = strings.TrimPrefix(v, "v")
+		if !reSemver.MatchString(v) {
+			return nil, fmt.Errorf("--version %q 不符合 x.y.z 语义化版本格式", overrideVersion)
+		}
+		if cmp, err := compareSemver(v, currentVersion); err != nil {
+			return nil, err
+		} else if cmp == 0 {
+			return nil, fmt.Errorf("--version %s 与当前版本相同, 无需发布", v)
+		} else if cmp < 0 {
+			return nil, fmt.Errorf("--version %s 低于当前版本 %s, 拒绝降级发布", v, currentVersion)
+		}
+		nextVersion = v
+	}
+
 	return &versionPlan{
 		currentVersion: currentVersion,
 		nextVersion:    nextVersion,
@@ -222,6 +282,7 @@ func planNextVersion(id string) (*versionPlan, error) {
 func runVersion(args []string) error {
 	fs := flag.NewFlagSet("version", flag.ExitOnError)
 	pluginID := fs.String("plugin", "", "插件 id")
+	overrideVersion := fs.String("version", "", "显式指定版本号 (默认按变更集递增)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -231,7 +292,7 @@ func runVersion(args []string) error {
 	}
 	id := strings.TrimSpace(*pluginID)
 
-	plan, err := planNextVersion(id)
+	plan, err := planNextVersion(id, *overrideVersion)
 	if err != nil {
 		return err
 	}
@@ -334,6 +395,7 @@ func runVersion(args []string) error {
 func runPublish(args []string) error {
 	fs := flag.NewFlagSet("publish", flag.ContinueOnError)
 	pluginID := fs.String("plugin", "", "插件 id")
+	overrideVersion := fs.String("version", "", "显式指定版本号 (默认按变更集递增)")
 	dryRun := fs.Bool("dry-run", false, "只打印将要执行的动作, 不写文件、不提交、不推送")
 	noPush := fs.Bool("no-push", false, "提交与打标签后不推送 (自检用)")
 	if err := fs.Parse(args); err != nil {
@@ -380,7 +442,7 @@ func runPublish(args []string) error {
 		return nil
 	}
 
-	plan, err := planNextVersion(id)
+	plan, err := planNextVersion(id, *overrideVersion)
 	if err != nil {
 		return err
 	}
@@ -401,7 +463,7 @@ func runPublish(args []string) error {
 	if err := goRunScript("check-plugins.go"); err != nil {
 		return err
 	}
-	if err := runVersion([]string{"--plugin", id}); err != nil {
+	if err := runVersion(versionArgs(id, *overrideVersion)); err != nil {
 		return err
 	}
 	if err := goRunScript("build-registry.go"); err != nil {
@@ -468,6 +530,16 @@ func tagAndPush(tag string, noPush bool) error {
 		return err
 	}
 	return gitRun("push", "origin", tag)
+}
+
+// versionArgs 组装 publish 内部转调 version 的参数; 显式版本必须透传, 否则
+// 预检打印的版本与实际写盘的版本会不一致。
+func versionArgs(id, overrideVersion string) []string {
+	args := []string{"--plugin", id}
+	if v := strings.TrimSpace(overrideVersion); v != "" {
+		args = append(args, "--version", v)
+	}
+	return args
 }
 
 func printPublishTail(tag string) {
@@ -842,10 +914,10 @@ func fileDigest(path string) (string, int64, error) {
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "用法: go run scripts/release.go <version|pack|record|publish> [选项]\n\n")
-		fmt.Fprintf(os.Stderr, "  version --plugin <id>\n")
+		fmt.Fprintf(os.Stderr, "  version --plugin <id> [--version <v>]\n")
 		fmt.Fprintf(os.Stderr, "  pack    --plugin <id> [--version <v>] [--out dist]\n")
 		fmt.Fprintf(os.Stderr, "  record  --plugin <id> [--dist dist] [--skip-registry]\n")
-		fmt.Fprintf(os.Stderr, "  publish --plugin <id> [--dry-run] [--no-push]\n")
+		fmt.Fprintf(os.Stderr, "  publish --plugin <id> [--version <v>] [--dry-run] [--no-push]\n")
 		os.Exit(2)
 	}
 
