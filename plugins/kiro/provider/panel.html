@@ -414,13 +414,27 @@ async function loginPoll(btn){
     toast("查询失败", "err", e.message);
   }finally{if(btn)busy(btn,false)}
 }
+/* 回调链接自带 state（授权页原样回传），用它恢复登录会话：
+   面板重载 / iframe 重挂后内存里的 loginState 会丢失，但服务端会话仍在。 */
+function stateFromCallbackURL(raw){
+  try{
+    const u=new URL(raw,location.origin);
+    const s=(u.searchParams.get("state")||"").trim();
+    if(s)return s;
+  }catch(e){/* 非标准 URL，退回正则 */ }
+  const m=/(?:[?&])state=([^&#\s]+)/.exec(raw);
+  if(!m)return "";
+  try{return decodeURIComponent(m[1]).trim()}catch(e){return m[1].trim()}
+}
 async function submitCallbackURL(btn){
   const v=document.getElementById("cbPaste").value.trim();
   if(!v){toast("请粘贴回调链接", "warn");return}
-  if(!loginState){toast("请先点击「新增 Kiro 账号」", "warn");return}
+  const state=stateFromCallbackURL(v)||loginState;
+  if(!state){toast("请先点击「新增 Kiro 账号」", "warn", "回调链接里没有 state，无法匹配登录会话");return}
+  loginState=state;
   busy(btn,true);
   try{
-    const data=await api("/oauth/login/status?state="+encodeURIComponent(loginState),{
+    const data=await api("/oauth/login/status?state="+encodeURIComponent(state),{
       method:"POST",
       headers:Object.assign({"Content-Type":"application/json"},authHeaders(getKey())),
       body:JSON.stringify({callback_url:v})
@@ -428,7 +442,13 @@ async function submitCallbackURL(btn){
     handleLoginResult(data);
     if(data&&data.status==="success")document.getElementById("cbPaste").value="";
   }catch(e){
-    toast("提交失败", "err", e.message);
+    if(e.message==="unknown_state"){
+      loginState="";
+      setLoginStatus("登录会话已过期","");
+      toast("登录会话已过期", "warn", "请重新点击「新增 Kiro 账号」发起登录");
+    }else{
+      toast("提交失败", "err", e.message);
+    }
   }finally{busy(btn,false)}
 }
 function handleLoginResult(data){
