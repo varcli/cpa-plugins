@@ -101,6 +101,11 @@ jobs:
     needs: [parse-tag, build]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -113,13 +118,46 @@ jobs:
           sha256sum *.zip > checksums.txt
           cat checksums.txt
 
+      # 本仓是多插件 monorepo, tag 跨插件混排: GitHub 的 generate_release_notes
+      # 只按「上一个 tag」比较, 会把别的插件的提交(乃至把上一个 tag 选成别的插件)
+      # 写进本插件的 notes —— 实测 workbuddy 的 Full Changelog 指到了 trae/v0.1.1。
+      # 改为自己按 plugins/<id> 路径过滤生成, 比较基准只取本插件的上一个 tag。
+      - name: Generate release notes (plugin-scoped)
+        id: notes
+        env:
+          PLUGIN_ID: ${{ needs.parse-tag.outputs.plugin_id }}
+          VERSION: ${{ needs.parse-tag.outputs.version }}
+        run: |
+          current="${PLUGIN_ID}/v${VERSION}"
+          prev="$(git tag -l "${PLUGIN_ID}/v*" --sort=-v:refname | grep -vx "${current}" | head -1 || true)"
+
+          {
+            echo "## ${PLUGIN_ID} v${VERSION}"
+            echo
+            if [ -n "${prev}" ]; then
+              echo "上一版本: \`${prev}\`"
+              range="${prev}..${current}"
+            else
+              echo "首个版本。"
+              range="${current}"
+            fi
+            echo
+            echo "### 变更"
+            echo
+            # 路径过滤是关键: 即使基准 tag 选错, 别的插件的提交也不会进来
+            git log --pretty='- %s (%h)' "${range}" -- "plugins/${PLUGIN_ID}"
+          } > release-notes.md
+          cat release-notes.md
+          echo "path=release-notes.md" >> "$GITHUB_OUTPUT"
+
       - name: Upload assets to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          name: ${{ needs.parse-tag.outputs.plugin_id }} v${{ needs.parse-tag.outputs.version }}
+          body_path: ${{ steps.notes.outputs.path }}
           files: |
             assets/*.zip
             assets/checksums.txt
-          generate_release_notes: true
 
   record:
     name: Record Artifact Hashes
