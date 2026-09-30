@@ -108,7 +108,7 @@
       "name": "Qoder",
       "description": "Qoder unified provider for CLIProxyAPI: CN (qoder.com.cn) and Intl (qoder.com / openapi.qoder.sh) in one plugin, per-account region routing, device-flow + PAT login, COSY-signed chat, daily check-in with streak, Pro upgrade claim, token keepalive, auto-adopts legacy qoder-cn / qoder-intl auth files.",
       "author": "varcli",
-      "version": "0.1.1",
+      "version": "0.5.0",
       "repository": "https://github.com/varcli/cpa-plugins",
       "homepage": "https://github.com/varcli/cpa-plugins/tree/main/plugins/qoder",
       "license": "MIT",
@@ -123,23 +123,23 @@
           {
             "goarch": "arm64",
             "goos": "darwin",
-            "sha256": "35e6223293d9792adad9e339771ac41577f701462193b297999d647457f2d10f",
-            "size": 3847798,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.1.1/qoder_0.1.1_darwin_arm64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.5.0/qoder_0.5.0_darwin_arm64.zip"
           },
           {
             "goarch": "amd64",
             "goos": "linux",
-            "sha256": "005d374888c99f5136a28701faa70a171ee3ec6d9ca5bd68727db0f56c57adf8",
-            "size": 7483448,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.1.1/qoder_0.1.1_linux_amd64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.5.0/qoder_0.5.0_linux_amd64.zip"
           },
           {
             "goarch": "arm64",
             "goos": "linux",
-            "sha256": "09341f2560d6cbe0758f87206cbb078e9587526dec3bbc7c1298c6768bbce509",
-            "size": 6821919,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.1.1/qoder_0.1.1_linux_arm64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.5.0/qoder_0.5.0_linux_arm64.zip"
           }
         ],
         "type": "direct"
