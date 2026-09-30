@@ -108,6 +108,15 @@ go vet ./...
 
 `-buildmode=c-shared` 是 CGO 构建，交叉编译需要目标平台的 C 工具链，因此发布产物由 CI 在各平台原生运行器上分别构建。
 
+代码分层：
+
+- `main.go` — C ABI 薄壳与方法分发；顶层持有版本字面量与配置字段声明（`scripts/release.go` 与 `scripts/dev-sandbox.go` 只扫描 `plugins/<id>/*.go` 顶层），并在 `cliproxy_plugin_init` 时注入 `provider`；
+- `provider/` — 协议实现：注册、认证、凭证导入与生命周期、模型目录、执行器、配额、管理面与面板；
+- `kirorpc/` — 宿主 RPC 管线（host.http.do / do_stream / stream_read、信封编解码）；
+- `kirostream/` — AWS Event Stream 解码；
+- `kirochat/` — 请求体构造与改写；
+- `kironx/` — 无依赖小工具。
+
 ## 相关
 
 - 产物命名与校验规则见 [宿主产物契约](../../docs/reference/host-artifact-contract.md)

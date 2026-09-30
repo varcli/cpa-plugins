@@ -1,0 +1,1 @@
+{"bump": "patch", "note": "修复配置字段声明对沙箱不可见: 把 10 个 ConfigFields 从子包 provider/rpc.go 提到 main.go 顶层, 经 provider.SetConfigFields 注入。此前顶层匹配 0 处, scripts/dev-sandbox.go 的 config 断言读到空声明, 而管理面回报 10 个字段, 会判「源码未声明却回报字段」失败。"}

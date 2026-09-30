@@ -1,0 +1,1 @@
+{"bump": "patch", "note": "配置字段声明改为顶层真实赋值: 用 struct 包装把 ConfigFields 标记 token 落到代码而非注释上。此前该 token 只出现在注释里, 靠注释后第一个 '{' 恰好是真声明才被 scripts/dev-sandbox.go 的纯文本解析器侥幸命中, 改一句注释就会静默失效。"}

@@ -89,6 +89,31 @@ var pluginVersionLiteral = struct {
 	Version string
 }{Version: "0.2.0"}
 
+// pluginConfigFields is the plugin's declared configuration surface. It lives at
+// the top level for the same reason as the version literal: scripts/dev-sandbox.go
+// globs plugins/<id>/*.go at the top level only and asserts the host reports every
+// field declared there, so a declaration inside a subpackage would be invisible to
+// that check.
+//
+// The sandbox parser is textual, not syntactic: it looks for the literal
+// ConfigFields marker token and then counts braces. Wrapping the slice in a
+// struct keeps that token on a real assignment, so it cannot be silently lost by
+// rewording a comment.
+var pluginConfigFields = struct {
+	ConfigFields []pluginapi.ConfigField
+}{ConfigFields: []pluginapi.ConfigField{
+	{Name: "import_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"reference", "copy"}, Description: "Default credential import ownership mode. reference follows the original kiro-cli/Amazon Q files; copy stores an independent snapshot."},
+	{Name: "login_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"kiro-browser", "aws-device"}, Description: "Flow used for NEW logins. aws-device supports Builder ID and IAM Identity Center (organization) accounts and is recommended for remote CPA servers."},
+	{Name: "api_region", Type: pluginapi.ConfigFieldTypeString, Description: "Kiro runtime region, usually us-east-1; independent of the AWS SSO region."},
+	{Name: "sso_region", Type: pluginapi.ConfigFieldTypeString, Description: "Fallback AWS SSO OIDC region."},
+	{Name: "sso_start_url", Type: pluginapi.ConfigFieldTypeString, Description: "Determines the aws-device account type: https://view.awsapps.com/start for Builder ID, or the organization's AWS access portal URL for IAM Identity Center."},
+	{Name: "browser_redirect_uri", Type: pluginapi.ConfigFieldTypeString, Description: "Used only by browser login modes. Production Kiro requires localhost (default http://localhost:3128) or an app.kiro.dev subdomain."},
+	{Name: "runtime_base_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional Kiro runtime base URL override for private gateways and tests."},
+	{Name: "model_discovery_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional Kiro ListAvailableModels service endpoint override. Defaults to https://q.{region}.amazonaws.com/."},
+	{Name: "usage_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional Kiro GetUsageLimits service endpoint override. Defaults to https://q.{region}.amazonaws.com/."},
+	{Name: "static_models", Type: pluginapi.ConfigFieldTypeArray, Description: "Additional Kiro runtime model IDs advertised when live discovery is unavailable."},
+}}
+
 func main() {}
 
 // -----------------------------------------------------------------------------
@@ -103,6 +128,7 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 	hostAPI = host
 	C.store_host_api(host)
 	provider.SetVersion(pluginVersionLiteral.Version)
+	provider.SetConfigFields(pluginConfigFields.ConfigFields)
 	provider.SetHostCaller(callHost)
 	plugin.abi_version = C.uint32_t(pluginabi.ABIVersion)
 	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)

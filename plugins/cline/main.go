@@ -90,10 +90,17 @@ var pluginVersionLiteral = struct {
 
 // pluginConfigFields is the plugin's declared configuration surface. It lives at
 // the top level for the same reason as the version literal: scripts/dev-sandbox.go
-// reads the `ConfigFields:` block out of plugins/<id>/*.go and asserts the host
-// reports every declared field, so a declaration inside a subpackage would be
-// invisible to that check.
-var pluginConfigFields = []pluginapi.ConfigField{
+// globs plugins/<id>/*.go at the top level only and asserts the host reports every
+// field declared there, so a declaration inside a subpackage would be invisible to
+// that check.
+//
+// The sandbox parser is textual, not syntactic: it looks for the literal
+// ConfigFields marker token and then counts braces. Wrapping the slice in a
+// struct keeps that token on a real assignment, so it cannot be silently lost by
+// rewording a comment.
+var pluginConfigFields = struct {
+	ConfigFields []pluginapi.ConfigField
+}{ConfigFields: []pluginapi.ConfigField{
 	{Name: "model_prefix", Type: pluginapi.ConfigFieldTypeString,
 		Description: "模型 ID 前缀, 用于与其他同 id 插件/原生 provider 共存 (默认 cline/)。"},
 	{Name: "enable_model_prefix", Type: pluginapi.ConfigFieldTypeBoolean,
@@ -102,7 +109,7 @@ var pluginConfigFields = []pluginapi.ConfigField{
 		Description: "隐藏的模型 ID 列表 (逗号分隔), 使用注册后的 ID (含 model_prefix); 以 * 结尾表示按前缀隐藏整个系列。"},
 	{Name: "models", Type: pluginapi.ConfigFieldTypeString,
 		Description: "额外附加到模型列表的 Cline 原生模型 ID (逗号分隔), 用于上游 feed 未列出但客户端可用的模型。"},
-}
+}}
 
 func main() {}
 
@@ -118,7 +125,7 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 	hostAPI = host
 	C.store_host_api(host)
 	provider.SetVersion(pluginVersionLiteral.Version)
-	provider.SetConfigFields(pluginConfigFields)
+	provider.SetConfigFields(pluginConfigFields.ConfigFields)
 	provider.SetHostCaller(callHost)
 	plugin.abi_version = C.uint32_t(pluginabi.ABIVersion)
 	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
@@ -13,6 +14,11 @@ import (
 )
 
 var configValue atomic.Value
+
+var (
+	configFieldsMu sync.RWMutex
+	configFields   []pluginapi.ConfigField
+)
 
 // pluginVersion is reported in the registration metadata. The literal lives in
 // main.go because the release tooling rewrites the single `Version: "x.y.z"`
@@ -26,6 +32,26 @@ func SetVersion(version string) {
 	if strings.TrimSpace(version) != "" {
 		pluginVersion = version
 	}
+}
+
+// SetConfigFields records the plugin's declared configuration fields.
+//
+// The literal list lives in main.go rather than here on purpose: the repository
+// tooling (scripts/release.go for the version literal, scripts/dev-sandbox.go's
+// declaredConfigFields) globs plugins/<id>/*.go at the top level only, so a
+// declaration buried in this subpackage would be invisible to both the release
+// pipeline and the sandbox's "declared config fields are actually reported"
+// assertion.
+func SetConfigFields(fields []pluginapi.ConfigField) {
+	configFieldsMu.Lock()
+	configFields = append([]pluginapi.ConfigField(nil), fields...)
+	configFieldsMu.Unlock()
+}
+
+func loadedConfigFields() []pluginapi.ConfigField {
+	configFieldsMu.RLock()
+	defer configFieldsMu.RUnlock()
+	return append([]pluginapi.ConfigField(nil), configFields...)
 }
 
 var (
@@ -201,18 +227,7 @@ func registration(raw []byte) ([]byte, error) {
 			Author:           "varcli",
 			GitHubRepository: "https://github.com/varcli/cpa-plugins",
 			Logo:             pluginLogoURL,
-			ConfigFields: []pluginapi.ConfigField{
-				{Name: "import_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"reference", "copy"}, Description: "Default credential import ownership mode. reference follows the original kiro-cli/Amazon Q files; copy stores an independent snapshot."},
-				{Name: "login_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"kiro-browser", "aws-device"}, Description: "Flow used for NEW logins. aws-device supports Builder ID and IAM Identity Center (organization) accounts and is recommended for remote CPA servers."},
-				{Name: "api_region", Type: pluginapi.ConfigFieldTypeString, Description: "Kiro runtime region, usually us-east-1; independent of the AWS SSO region."},
-				{Name: "sso_region", Type: pluginapi.ConfigFieldTypeString, Description: "Fallback AWS SSO OIDC region."},
-				{Name: "sso_start_url", Type: pluginapi.ConfigFieldTypeString, Description: "Determines the aws-device account type: https://view.awsapps.com/start for Builder ID, or the organization's AWS access portal URL for IAM Identity Center."},
-				{Name: "browser_redirect_uri", Type: pluginapi.ConfigFieldTypeString, Description: "Used only by browser login modes. Production Kiro requires localhost (default http://localhost:3128) or an app.kiro.dev subdomain."},
-				{Name: "runtime_base_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional Kiro runtime base URL override for private gateways and tests."},
-				{Name: "model_discovery_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional Kiro ListAvailableModels service endpoint override. Defaults to https://q.{region}.amazonaws.com/."},
-				{Name: "usage_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional Kiro GetUsageLimits service endpoint override. Defaults to https://q.{region}.amazonaws.com/."},
-				{Name: "static_models", Type: pluginapi.ConfigFieldTypeArray, Description: "Additional Kiro runtime model IDs advertised when live discovery is unavailable."},
-			},
+			ConfigFields:     loadedConfigFields(),
 		},
 		Capabilities: registrationCapability{
 			ModelProvider:         true,
