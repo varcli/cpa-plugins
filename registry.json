@@ -65,7 +65,7 @@
       "name": "Kiro",
       "description": "Kiro (AWS CodeWhisperer) provider for CLIProxyAPI: imports Kiro IDE / kiro-cli / Amazon Q / AWS SSO credentials (JSON, SQLite, sibling device registrations), Kiro desktop browser OAuth, AWS SSO OIDC device flow and IAM Identity Center browser flow, live ListAvailableModels catalog discovery, AWS Event Stream chat executor, GetUsageLimits quota reporting, and a management panel.",
       "author": "varcli",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "repository": "https://github.com/varcli/cpa-plugins",
       "homepage": "https://github.com/varcli/cpa-plugins/tree/main/plugins/kiro",
       "license": "MIT",
@@ -83,21 +83,21 @@
             "goos": "darwin",
             "sha256": "",
             "size": 0,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.1.0/kiro_0.1.0_darwin_arm64.zip"
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.2.0/kiro_0.2.0_darwin_arm64.zip"
           },
           {
             "goarch": "amd64",
             "goos": "linux",
             "sha256": "",
             "size": 0,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.1.0/kiro_0.1.0_linux_amd64.zip"
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.2.0/kiro_0.2.0_linux_amd64.zip"
           },
           {
             "goarch": "arm64",
             "goos": "linux",
             "sha256": "",
             "size": 0,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.1.0/kiro_0.1.0_linux_arm64.zip"
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.2.0/kiro_0.2.0_linux_arm64.zip"
           }
         ],
         "type": "direct"

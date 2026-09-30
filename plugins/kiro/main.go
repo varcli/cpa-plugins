@@ -87,7 +87,7 @@ var hostAPI *C.cliproxy_host_api
 // provider at init so `release.go version` can find and bump it.
 var pluginVersionLiteral = struct {
 	Version string
-}{Version: "0.1.0"}
+}{Version: "0.2.0"}
 
 func main() {}
 

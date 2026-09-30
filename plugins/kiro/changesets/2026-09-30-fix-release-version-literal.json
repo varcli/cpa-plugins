@@ -1,1 +1,0 @@
-{"bump": "patch", "note": "修复发布工具无法识别版本字面量: 在 main.go 顶层补上 release.go 约定的 `Version: \"x.y.z\"` 字面量并注入 provider.SetVersion。此前版本字面量只存在于子包 provider/rpc.go, 顶层匹配 0 处, scripts/release.go version 直接报错, 该插件从建立起就无法产出版本。"}
