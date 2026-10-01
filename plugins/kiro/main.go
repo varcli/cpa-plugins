@@ -87,7 +87,7 @@ var hostAPI *C.cliproxy_host_api
 // provider at init so `release.go version` can find and bump it.
 var pluginVersionLiteral = struct {
 	Version string
-}{Version: "0.5.2"}
+}{Version: "0.5.3"}
 
 // pluginConfigFields is the plugin's declared configuration surface. It lives at
 // the top level for the same reason as the version literal: scripts/dev-sandbox.go

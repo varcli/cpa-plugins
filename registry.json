@@ -65,7 +65,7 @@
       "name": "Kiro",
       "description": "Kiro (AWS CodeWhisperer) provider for CLIProxyAPI: imports Kiro IDE / kiro-cli / Amazon Q / AWS SSO credentials (JSON, SQLite, sibling device registrations), Kiro desktop browser OAuth, AWS SSO OIDC device flow and IAM Identity Center browser flow, live ListAvailableModels catalog discovery, AWS Event Stream chat executor, GetUsageLimits quota reporting, and a management panel.",
       "author": "varcli",
-      "version": "0.5.2",
+      "version": "0.5.3",
       "repository": "https://github.com/varcli/cpa-plugins",
       "homepage": "https://github.com/varcli/cpa-plugins/tree/main/plugins/kiro",
       "license": "MIT",
@@ -81,23 +81,23 @@
           {
             "goarch": "arm64",
             "goos": "darwin",
-            "sha256": "acd98a032cb44e938f4eb131df916b1ce9ef7dc5577cb688d52b23f3852bfadc",
-            "size": 3726770,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.5.2/kiro_0.5.2_darwin_arm64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.5.3/kiro_0.5.3_darwin_arm64.zip"
           },
           {
             "goarch": "amd64",
             "goos": "linux",
-            "sha256": "162f845f37aebada407ac477f8ea51419400e71dbe78bb3875c3d890e87c8360",
-            "size": 7192218,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.5.2/kiro_0.5.2_linux_amd64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.5.3/kiro_0.5.3_linux_amd64.zip"
           },
           {
             "goarch": "arm64",
             "goos": "linux",
-            "sha256": "50887c0328ba885e9be7d2684247b6013abdb4fc171440ab86944cb3c6dfb641",
-            "size": 6666705,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.5.2/kiro_0.5.2_linux_arm64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.5.3/kiro_0.5.3_linux_arm64.zip"
           }
         ],
         "type": "direct"
