@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -215,6 +216,152 @@ func TestReloginStatusConsumesPastedCallback(t *testing.T) {
 	}
 	if savedName != "kiro-relogin.json" {
 		t.Fatalf("relogin must replace the existing credential file, saved %q", savedName)
+	}
+}
+
+// The full panel flow, with no hand-seeded state: start a real login through
+// handleConsoleOAuthStart, then paste back the callback the sign-in page would
+// have produced. This is the sequence the user actually performs, and it is the
+// only test that proves the two halves agree on where the session lives.
+//
+// The hand-seeded tests above would still pass if starting a login stored its
+// state somewhere the callback path never looks; this one would not.
+func TestConsoleOAuthPanelFlowStartThenPaste(t *testing.T) {
+	// The sign-in URL and token endpoint are never contacted at start time, so
+	// only the token exchange and the credential save need stubbing.
+	originalHTTP, originalCall := hostHTTPDoCall, callHostCall
+	hostHTTPDoCall = func(req hostHTTPRequest) (hostHTTPResponse, error) {
+		return hostHTTPResponse{
+			StatusCode: http.StatusOK,
+			Body:       []byte(`{"accessToken":"at","refreshToken":"rt","expiresIn":3600}`),
+		}, nil
+	}
+	var savedName string
+	callHostCall = func(method string, payload any) (json.RawMessage, error) {
+		if method == "host.auth.save" {
+			if m, isMap := payload.(map[string]any); isMap {
+				savedName, _ = m["name"].(string)
+			}
+		}
+		return json.RawMessage(`{"ok":true}`), nil
+	}
+	t.Cleanup(func() { hostHTTPDoCall, callHostCall = originalHTTP, originalCall })
+
+	// 1. Panel clicks 「新增 Kiro 账号」.
+	startRaw, errStart := handleConsoleOAuthStart(managementRequest{
+		Method: http.MethodPost, Path: "/v0/management/plugins/kiro/oauth/login/start", Body: []byte(`{}`),
+	})
+	if errStart != nil {
+		t.Fatalf("handleConsoleOAuthStart: %v", errStart)
+	}
+	startStatus, started := decodeManagementBody(t, startRaw)
+	if startStatus != http.StatusOK {
+		t.Fatalf("start: HTTP %d body=%v", startStatus, started)
+	}
+	state, _ := started["state"].(string)
+	if strings.TrimSpace(state) == "" {
+		t.Fatalf("start returned no state: %v", started)
+	}
+	t.Cleanup(func() {
+		clearBrowserLoginSession(state)
+		consoleOAuthSessions.Lock()
+		delete(consoleOAuthSessions.metadata, state)
+		consoleOAuthSessions.Unlock()
+	})
+
+	// 2. The browser lands on the redirect target; the user pastes that URL.
+	pasted := defaultRedirectURI + "/oauth/callback?code=panel-flow-code&state=" + url.QueryEscape(state)
+	body, _ := json.Marshal(map[string]string{"callback_url": pasted})
+	raw, errStatus := handleConsoleOAuthStatus(managementRequest{
+		Method: http.MethodPost, Query: url.Values{"state": []string{state}}, Body: body,
+	})
+	if errStatus != nil {
+		t.Fatalf("handleConsoleOAuthStatus: %v", errStatus)
+	}
+	status, out := decodeManagementBody(t, raw)
+	if status != http.StatusOK {
+		t.Fatalf("paste: HTTP %d body=%v", status, out)
+	}
+	if got, _ := out["status"].(string); got != "success" {
+		t.Fatalf("status=%v want success — 面板流程走完后仍拿不到凭据 (msg=%v)", out["status"], out["message"])
+	}
+	if savedName == "" {
+		t.Fatal("登录成功却没有把凭据写回宿主")
+	}
+}
+
+// The panel polls every 3s while the user is over in the browser. That poll
+// must not destroy the login it is waiting on: the console path carries no auth
+// directory, so the on-disk callback probe cannot run, and treating that as a
+// terminal error deleted the session before the user could ever paste.
+//
+// This reproduces the reported symptom: the panel says the session expired
+// seconds after it started, and pasting the callback then 404s with
+// unknown_state.
+func TestConsolePollBeforePasteKeepsSessionAlive(t *testing.T) {
+	originalHTTP, originalCall := hostHTTPDoCall, callHostCall
+	hostHTTPDoCall = func(req hostHTTPRequest) (hostHTTPResponse, error) {
+		return hostHTTPResponse{
+			StatusCode: http.StatusOK,
+			Body:       []byte(`{"accessToken":"at","refreshToken":"rt","expiresIn":3600}`),
+		}, nil
+	}
+	callHostCall = func(method string, payload any) (json.RawMessage, error) {
+		return json.RawMessage(`{"ok":true}`), nil
+	}
+	t.Cleanup(func() { hostHTTPDoCall, callHostCall = originalHTTP, originalCall })
+
+	startRaw, errStart := handleConsoleOAuthStart(managementRequest{
+		Method: http.MethodPost, Path: "/v0/management/plugins/kiro/oauth/login/start", Body: []byte(`{}`),
+	})
+	if errStart != nil {
+		t.Fatalf("handleConsoleOAuthStart: %v", errStart)
+	}
+	_, started := decodeManagementBody(t, startRaw)
+	state, _ := started["state"].(string)
+	if state == "" {
+		t.Fatalf("start returned no state: %v", started)
+	}
+	t.Cleanup(func() {
+		clearBrowserLoginSession(state)
+		consoleOAuthSessions.Lock()
+		delete(consoleOAuthSessions.metadata, state)
+		consoleOAuthSessions.Unlock()
+	})
+
+	// The panel's first poll, before the user has finished in the browser.
+	pollRaw, errPoll := handleConsoleOAuthStatus(managementRequest{
+		Method: http.MethodGet, Query: url.Values{"state": []string{state}},
+	})
+	if errPoll != nil {
+		t.Fatalf("poll: %v", errPoll)
+	}
+	pollStatus, polled := decodeManagementBody(t, pollRaw)
+	if pollStatus != http.StatusOK {
+		t.Fatalf("poll: HTTP %d body=%v", pollStatus, polled)
+	}
+	if got, _ := polled["status"].(string); got != "pending" {
+		t.Fatalf("poll before the callback must stay pending, got %v (msg=%v)", polled["status"], polled["message"])
+	}
+
+	// Now the user pastes the callback the browser produced.
+	pasted := defaultRedirectURI + "/oauth/callback?code=late-paste-code&state=" + url.QueryEscape(state)
+	body, _ := json.Marshal(map[string]string{"callback_url": pasted})
+	raw, errPaste := handleConsoleOAuthStatus(managementRequest{
+		Method: http.MethodPost, Query: url.Values{"state": []string{state}}, Body: body,
+	})
+	if errPaste != nil {
+		t.Fatalf("paste: %v", errPaste)
+	}
+	status, out := decodeManagementBody(t, raw)
+	if status == http.StatusNotFound {
+		t.Fatalf("会话在粘贴前就被轮询删掉了: %v", out)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("paste: HTTP %d body=%v", status, out)
+	}
+	if got, _ := out["status"].(string); got != "success" {
+		t.Fatalf("status=%v want success (msg=%v)", out["status"], out["message"])
 	}
 }
 

@@ -221,6 +221,11 @@ func pollIDCBrowserLoginRequest(req authLoginPollRequest) ([]byte, error) {
 	if errExpiry != nil || !time.Now().UTC().Before(expiresAt) {
 		return okEnvelope(authLoginPollResponse{Status: "error", Message: "Kiro organization browser authorization expired"})
 	}
+	if strings.TrimSpace(req.Host.AuthDir) == "" {
+		// Console path: no host config, so no on-disk fallback to consult.
+		// Waiting is the only correct answer — see browserCallback.
+		return okEnvelope(authLoginPollResponse{Status: "pending", Message: "Waiting for Kiro organization authorization"})
+	}
 	callback, callbackPath, pending, errCallback := readOAuthCallback(req.Host.AuthDir, req.State)
 	if pending {
 		return okEnvelope(authLoginPollResponse{Status: "pending", Message: "Waiting for Kiro organization authorization"})
@@ -831,6 +836,21 @@ func browserDeviceContinuation(state string) (deviceLoginState, bool) {
 	return *session.Device, true
 }
 
+// browserCallback resolves the pending callback for a login session.
+//
+// v0.5.3: a missing auth directory no longer becomes an error. The panel's
+// console path reaches this through /v0/management, and ManagementRequest
+// carries no host config at all (the SDK type is Method/Path/Headers/Query/Body
+// only), so req.Host.AuthDir is always empty there. Treating that as a failed
+// read made every console poll report "error" — and because the console handler
+// deletes the session on any terminal status, the panel's own 3-second poll
+// killed the login before the user could finish in the browser. The visible
+// symptom was 「登录会话已过期」seconds after starting, with the pasted callback
+// then rejected as unknown_state.
+//
+// The in-memory session is authoritative for the pasted-callback flow; the
+// on-disk .oauth file is only the host-side fallback, which genuinely needs a
+// directory. So: no directory means "nothing on disk yet", i.e. keep waiting.
 func browserCallback(authDir, state string) (oauthCallbackPayload, string, bool, error) {
 	browserLoginSessions.Lock()
 	session, exists := browserLoginSessions.sessions[state]
@@ -840,6 +860,9 @@ func browserCallback(authDir, state string) (oauthCallbackPayload, string, bool,
 		return callback, "", false, nil
 	}
 	browserLoginSessions.Unlock()
+	if strings.TrimSpace(authDir) == "" {
+		return oauthCallbackPayload{}, "", true, nil
+	}
 	return readOAuthCallback(authDir, state)
 }
 

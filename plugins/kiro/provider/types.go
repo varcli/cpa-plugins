@@ -10,15 +10,21 @@ import (
 )
 
 const (
-	providerID     = "kiro"
-	providerName   = "kiro"
-	pluginName     = "kiro"
-	defaultRegion  = "us-east-1"
-	pluginLogoPath = "/v0/resource/plugins/" + pluginName + "/icon.svg"
+	providerID    = "kiro"
+	providerName  = "kiro"
+	pluginName    = "kiro"
+	defaultRegion = "us-east-1"
 
-	// Official Kiro icon. metadata.logo is what the CPA management UI renders
-	// in the sidebar drawer and the OAuth entry.
-	pluginLogoURL = "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/Kiro.png"
+	// pluginLogoURL is the icon the CPA management UI renders for this plugin
+	// in the sidebar menu entry, the plugin list, and the OAuth entry.
+	//
+	// v0.5.3: the previous value pointed at a DGZSbot/ai-icon blob that never
+	// existed (HTTP 404), so the panel menu entry rendered with no icon at all.
+	// The host serves resource routes by exact path match only — it does not
+	// forward /v0/resource/plugins/<id>/<file> sub-paths — so the icon cannot be
+	// self-hosted behind a resource route and must be an absolute URL the
+	// browser can fetch directly. This is Kiro's own published icon.
+	pluginLogoURL = "https://kiro.dev/icon.svg"
 
 	defaultSSOStartURL    = "https://view.awsapps.com/start"
 	defaultLoginMode      = "kiro-browser"
