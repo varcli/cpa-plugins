@@ -61,6 +61,14 @@ CGO_ENABLED=1 go build -buildmode=c-shared -o trae.so .
 
 `login_variant` 是**粘性**的：只有配置里显式出现该键才会改变它。宿主在 auth store 变动时可能用不带该键的配置重新下发 register/reconfigure，这种空配置不会把变体重置回 `cn`（Intl 登录不会中途被改道）。`app_version` 同理，只在新值非空时覆盖。
 
+### CPA 自带的新增账号
+
+CPA 自带的「新增账号」入口（v8：`/v8/management/oauth/auth-url?provider=trae`，v0：`GET /v0/management/trae-auth-url`）与插件面板走同一条登录流程，但回调能不能回到插件，取决于部署形态：
+
+- Trae 授权页强制要求 `auth_callback_url` 形如 `http://127.0.0.1:<端口>/authorize`，插件因此总是自建回环监听并优先从该监听取码。浏览器与 CPA 同机时，自带入口可直接走完。
+- 浏览器不在 CPA 宿主机上（远程 / Docker）时，回环回调到不了插件；自带界面**没有粘贴框**，请改用**插件面板**的粘贴框提交地址栏里失败的完整链接。
+- 若宿主把回调重定向到了它自己的 `oauth-callback` 端点，插件会在轮询时读取 `<AuthDir>/.oauth-trae-<state>.oauth`。本轮修复：此前该回退被 `listener == nil` 门禁挡住，而实时登录一定会绑定监听，导致它永远不可达，自带流程会在整个 15 分钟 TTL 内一直 "pending" 直到过期。
+
 ### 管理面接口
 
 插件在 `/v0/management/plugins/trae/` 下暴露以下路由：

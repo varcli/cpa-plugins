@@ -626,17 +626,16 @@ func intlhandlePollLogin(request []byte) ([]byte, error) {
 	select {
 	case <-lc.done:
 	default:
-		if lc.listener == nil {
-			// Resource-callback flow: pick up the host oauth-callback
-			// file if the redirect landed there instead of our route.
-			if code, cbErr, ok := readHostCallbackFile(lc.authDir, state); ok {
-				if cbErr != "" {
-					lc.err = fmt.Errorf("oauth callback error: %s", cbErr)
-				} else if code != "" {
-					lc.authCode = code
-				}
-				intlCompleteLogin(lc)
+		// Always probe the host-written callback file — see the note in
+		// main.go: gating this on lc.listener == nil made it unreachable for
+		// live logins, which broke the built-in flow on remote hosts.
+		if code, cbErr, ok := readHostCallbackFile(lc.authDir, state); ok {
+			if cbErr != "" {
+				lc.err = fmt.Errorf("oauth callback error: %s", cbErr)
+			} else if code != "" {
+				lc.authCode = code
 			}
+			intlCompleteLogin(lc)
 		}
 		select {
 		case <-lc.done:

@@ -1299,19 +1299,22 @@ func handlePollLogin(request []byte) ([]byte, error) {
 	case <-lc.done:
 		// Callback received.
 	default:
-		if lc.listener == nil {
-			// Resource-callback flow: the browser redirect completed the
-			// flow on the CPA resource route; if the host intercepted the
-			// redirect at its own oauth-callback endpoint instead, pick
-			// the code up from the .oauth callback file it wrote.
-			if code, cbErr, ok := readHostCallbackFile(lc.authDir, state); ok {
-				if cbErr != "" {
-					lc.err = fmt.Errorf("oauth callback error: %s", cbErr)
-				} else if code != "" {
-					lc.authCode = code
-				}
-				completeLogin(lc)
+		// The host may have received the redirect at its own oauth-callback
+		// endpoint and written the code to <authDir>/.oauth-trae-<state>.oauth
+		// instead of letting our resource route (or our loopback listener) see
+		// it. This used to be gated on lc.listener == nil, but a live login
+		// always binds a listener, so the gate made the fallback unreachable:
+		// on a remote/Docker host the built-in "add account" flow then polled
+		// "pending" for the full 15-minute TTL and expired. Probing is cheap
+		// (one failed os.ReadFile per poll) and the file only exists when the
+		// host actually wrote it, so always try it.
+		if code, cbErr, ok := readHostCallbackFile(lc.authDir, state); ok {
+			if cbErr != "" {
+				lc.err = fmt.Errorf("oauth callback error: %s", cbErr)
+			} else if code != "" {
+				lc.authCode = code
 			}
+			completeLogin(lc)
 		}
 		select {
 		case <-lc.done:
