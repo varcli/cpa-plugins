@@ -1,1 +1,0 @@
-{"bump": "patch", "note": "修复 CPA 自带「新增账号」入口：auth.login.start 返回的 url 不再被改写成插件面板链接，自带界面直接展示上游真实授权地址。此前自带流程拿到的 URL 是 /management.html#/plugin-pages/kiro/0，用户无从完成设备码授权，会话一直 pending 直到过期；现在自带入口与插件面板共用同一登录流程，两者都能正常走完。"}
