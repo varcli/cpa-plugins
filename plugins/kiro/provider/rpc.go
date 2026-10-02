@@ -88,6 +88,7 @@ func loadedConfig() pluginConfig {
 		config.ModelPrefix = "kiro/"
 	}
 	config.LoginMode = normalizeLoginMode(config.LoginMode)
+	config.SocialProvider = normalizeSocialProvider(config.SocialProvider)
 	if config.SSOStartURL == "" {
 		config.SSOStartURL = defaultSSOStartURL
 	}
@@ -107,8 +108,21 @@ func normalizeLoginMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "aws-device", "device", "device-code":
 		return "aws-device"
+	case socialDeviceLoginMode, "social", "device-social":
+		return socialDeviceLoginMode
+	case browserLoginMode, "browser", "kiro":
+		return browserLoginMode
 	default:
 		return defaultLoginMode
+	}
+}
+
+func normalizeSocialProvider(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "github", "git-hub":
+		return "github"
+	default:
+		return defaultSocialProvider
 	}
 }
 
@@ -147,9 +161,10 @@ func parseStringList(raw string) []string {
 // login_mode is STICKY — it changes only when the incoming config explicitly
 // carries a login_mode: line. The host may resend Register/Reconfigure with a
 // bare or foreign config block (e.g. during auth-store churn), and resetting
-// the login flow to the kiro-browser default mid-flight would strand users who
-// configured aws-device. Every other key resets to its built-in default when
-// absent, so removing a key reverts it.
+// the login flow to the built-in default mid-flight would strand users who
+// configured aws-device or kiro-browser. Every other key, social_provider
+// included, resets to its built-in default when absent, so removing a key
+// reverts it.
 func applyConfig(raw []byte) {
 	if len(raw) == 0 {
 		return
@@ -165,6 +180,7 @@ func applyConfig(raw []byte) {
 		ImportMode:         "reference",
 		LoginMode:          loadedConfig().LoginMode, // sticky: keep unless overridden below
 		ModelPrefix:        "kiro/",
+		SocialProvider:     defaultSocialProvider,
 		SSOStartURL:        defaultSSOStartURL,
 		BrowserSignInURL:   defaultSignInURL,
 		BrowserRedirectURI: defaultRedirectURI,
@@ -178,6 +194,8 @@ func applyConfig(raw []byte) {
 			config.ImportMode = normalizeMode(strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "import_mode:")), "\"'"))
 		case strings.HasPrefix(line, "login_mode:"):
 			config.LoginMode = normalizeLoginMode(strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "login_mode:")), "\"'"))
+		case strings.HasPrefix(line, "social_provider:"):
+			config.SocialProvider = normalizeSocialProvider(strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "social_provider:")), "\"'"))
 		case strings.HasPrefix(line, "api_region:"):
 			config.APIRegion = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "api_region:")), "\"'")
 		case strings.HasPrefix(line, "sso_region:"):

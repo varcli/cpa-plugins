@@ -1,13 +1,13 @@
 # Kiro
 
-CLIProxyAPI 的 Kiro（AWS CodeWhisperer）Provider 插件：导入 Kiro IDE / kiro-cli / Amazon Q / AWS SSO 凭证，支持 Kiro 桌面浏览器 OAuth 与 AWS SSO 设备码 / 组织登录，实时拉取模型目录，流式执行 chat completions，查询配额并提供管理面板。
+CLIProxyAPI 的 Kiro（AWS CodeWhisperer）Provider 插件：导入 Kiro IDE / kiro-cli / Amazon Q / AWS SSO 凭证，支持 Google/GitHub 社交设备码、Kiro 桌面浏览器 OAuth 与 AWS SSO 设备码 / 组织登录，实时拉取模型目录，流式执行 chat completions，查询配额并提供管理面板。
 
 ## 功能
 
 | 能力 | 说明 |
 |---|---|
 | **凭证导入** | 扫描目录导入 Kiro IDE / kiro-cli / Amazon Q / AWS SSO 凭证：JSON、SQLite（`auth_kv`）、同目录 `<clientIdHash>.json` device-registration。`reference` 模式跟随原始文件，`copy` 模式保存独立快照 |
-| **多路登录** | Kiro 桌面浏览器 OAuth（PKCE）、AWS SSO OIDC 设备码（Builder ID 与组织通用）、IAM Identity Center 组织浏览器登录 |
+| **多路登录** | Google/GitHub 社交设备码（默认）、Kiro 桌面浏览器 OAuth（PKCE，旧版）、AWS SSO OIDC 设备码（Builder ID 与组织通用）、IAM Identity Center 组织浏览器登录 |
 | **模型发现** | `ListAvailableModels` 实时目录，按账号的 `profileArn` 拉取；失败时回退到内置静态目录 + 配置的 `static_models` |
 | **流式执行** | AWS Event Stream 二进制分帧解析（CRC32 校验、工具调用增量拼装、usage 透出），非流式请求聚合为单个 completion |
 | **配额查询** | `GetUsageLimits` 用量与剩余额度，按账号卡片展示 |
@@ -43,7 +43,8 @@ CGO_ENABLED=1 go build -buildmode=c-shared -o kiro.so .
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `import_mode` | enum | 凭据导入归属模式：`reference`（默认，跟随原始文件）或 `copy`（独立快照） |
-| `login_mode` | enum | **新登录**使用的流程：`kiro-browser`（默认，Kiro 桌面浏览器 OAuth）或 `aws-device`（AWS SSO 设备码，支持 Builder ID 与组织，推荐用于远程 CPA 服务器）。该键为「粘性」：仅当配置显式出现 `login_mode:` 行时才改变，避免宿主中途重发空配置把流程打回默认 |
+| `login_mode` | enum | **新登录**使用的流程：`social-device`（默认，Google/GitHub 社交设备码）、`kiro-browser`（Kiro 桌面浏览器 OAuth）、`aws-device`（AWS SSO 设备码，支持 Builder ID 与组织）。该键为「粘性」：仅当配置显式出现 `login_mode:` 行时才改变，避免宿主中途重发空配置把流程打回默认 |
+| `social_provider` | enum | `social-device` 使用哪个第三方账号：`google`（默认）或 `github`。面板上的账号选择器按次覆盖该值，无需改宿主配置 |
 | `api_region` | string | Kiro runtime 区域，通常 `us-east-1`，与 AWS SSO 区域无关 |
 | `sso_region` | string | AWS SSO OIDC 回退区域 |
 | `sso_start_url` | string | 决定设备码登录的账号类型：`https://view.awsapps.com/start` 为 Builder ID；组织账号填 IAM Identity Center 的 AWS access portal URL |
@@ -57,10 +58,11 @@ CGO_ENABLED=1 go build -buildmode=c-shared -o kiro.so .
 
 ### 登录
 
-在管理面板的 Kiro 页面点「新增 Kiro 账号」：
+在管理面板的 Kiro 页面选好第三方账号后点「新增 Kiro 账号」：
 
-- **浏览器流程**（`login_mode: kiro-browser`）：在新标签页完成授权。若浏览器停在「无法连接 127.0.0.1:&lt;端口&gt;」页面，把地址栏完整链接粘贴到面板的粘贴框提交即可（无需改写前缀）。粘贴的链接会走与回调页完全相同的校验与落盘路径，提交后立即换取 token 并保存凭据。
-- **设备码流程**（`login_mode: aws-device`）：访问面板给出的验证地址并输入用户码。该流程同时支持 Builder ID 与 IAM Identity Center 组织账号。组织账号走两步：粘贴回调后插件返回验证地址与用户码，按提示在浏览器打开验证页即可。
+- **社交设备码**（`login_mode: social-device`，默认）：插件向 Kiro 申请设备码并打开 `app.kiro.dev` 的验证页，在页面用 Google 或 GitHub 账号完成授权，然后回来点「检查状态」（面板每 3 秒也会自动轮询）。整个流程没有回调地址，因此不需要粘贴任何链接，在远程 / 容器化 CPA 服务器上同样可用。授权按次独立：同一个第三方账号重复登录会新增一张卡片，不会覆盖已有账号。
+- **浏览器流程**（`login_mode: kiro-browser`，旧版）：在新标签页完成授权。Kiro 的桌面 token 端点现在会拒绝社交账号在这条流程里拿到的授权码（表现为 `Kiro browser token exchange failed: Oops, something went wrong. Please try again later.`），仅当账号确实需要它时才使用。若浏览器停在「无法连接 127.0.0.1:&lt;端口&gt;」页面，把地址栏完整链接粘贴到面板的粘贴框提交即可（无需改写前缀）。粘贴的链接会走与回调页完全相同的校验与落盘路径，提交后立即换取 token 并保存凭据。
+- **AWS SSO 设备码**（`login_mode: aws-device`）：访问面板给出的验证地址并输入用户码。该流程同时支持 Builder ID 与 IAM Identity Center 组织账号。组织账号走两步：粘贴回调后插件返回验证地址与用户码，按提示在浏览器打开验证页即可。
 
 粘贴框同时服务于「新增账号」与卡片上的「重新登录」：插件会按当前登录类型把回调提交到对应端点（`/oauth/login/status` 或 `/oauth/relogin/status`）。
 

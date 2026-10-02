@@ -53,7 +53,14 @@ func handleReloginStart(req managementRequest) ([]byte, error) {
 		return managementJSON(http.StatusBadRequest, map[string]any{"error": "invalid_auth_filename"}), nil
 	}
 
-	raw, err := startLogin(mustJSON(authLoginStartRequest{Provider: providerID, Metadata: map[string]any{"relogin": true}}))
+	// The panel picks the third-party account for social-device logins; pass it
+	// through the metadata so applyOAuthOverrides can honour it for this
+	// authorization only.
+	metadata := map[string]any{"relogin": true}
+	if socialProvider := strings.TrimSpace(body.SocialProvider); socialProvider != "" {
+		metadata["social_provider"] = socialProvider
+	}
+	raw, err := startLogin(mustJSON(authLoginStartRequest{Provider: providerID, Metadata: metadata}))
 	if err != nil {
 		return nil, err
 	}

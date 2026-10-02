@@ -1,0 +1,1 @@
+{"bump": "minor", "note": "新增 social-device 登录流程并设为默认：Google/GitHub 账号改在 app.kiro.dev 完成设备码授权（无需 localhost 回调，也不必粘贴链接）。原先的 kiro-browser 流程对社交账号会把授权码提交给 Kiro 桌面 token 端点，上游直接拒绝（Kiro browser token exchange failed: Oops, something went wrong. Please try again later.），永远拿不到凭据；kiro-browser 仍保留可选。新增 social_provider 配置项与面板第三方账号选择器，登录/重登录按次生效。"}

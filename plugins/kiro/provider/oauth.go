@@ -59,6 +59,29 @@ type oidcTokenResponse struct {
 	TokenType    string `json:"tokenType"`
 }
 
+// socialDeviceAuthorizationResponse / socialDevicePollResponse cover Kiro's
+// own device-authorization endpoints (Google/GitHub social sign-in). This flow
+// replaces the browser PKCE redirect for social accounts: the user authorizes
+// on app.kiro.dev and the plugin polls for the token, so there is no localhost
+// callback to relay and no authorization code to exchange.
+type socialDeviceAuthorizationResponse struct {
+	DeviceCode              string `json:"deviceCode"`
+	UserCode                string `json:"userCode"`
+	VerificationURI         string `json:"verificationUri"`
+	VerificationURIComplete string `json:"verificationUriComplete"`
+	ExpiresInMilliseconds   int64  `json:"expiresInMilliseconds"`
+	IntervalInMilliseconds  int64  `json:"intervalInMilliseconds"`
+}
+
+type socialDevicePollResponse struct {
+	AccessToken      string `json:"accessToken"`
+	RefreshToken     string `json:"refreshToken"`
+	ProfileARN       string `json:"profileArn"`
+	IdentityProvider string `json:"identityProvider"`
+	Status           string `json:"status"`
+	ExpiresIn        int    `json:"expiresIn"`
+}
+
 func startLogin(raw []byte) ([]byte, error) {
 	var req authLoginStartRequest
 	_ = json.Unmarshal(raw, &req)
@@ -72,20 +95,32 @@ func startLogin(raw []byte) ([]byte, error) {
 func startLoginInternal(raw []byte, req authLoginStartRequest) ([]byte, error) {
 	if json.Unmarshal(raw, &req) == nil {
 		mode := strings.ToLower(strings.TrimSpace(kironx.String(req.Metadata, "login_mode")))
-		if mode == "kiro-browser" || mode == "aws-device" {
+		if mode == browserLoginMode || mode == socialDeviceLoginMode || mode == "aws-device" {
 			config := loadedConfig()
 			applyOAuthOverrides(&config, req.Metadata)
-			if mode == "kiro-browser" {
+			switch mode {
+			case browserLoginMode:
 				return startBrowserLoginWithConfig(raw, config)
+			case socialDeviceLoginMode:
+				return startSocialDeviceLoginWithConfig(raw, config)
+			default:
+				return startDeviceLoginWithConfig(raw, config)
 			}
-			return startDeviceLoginWithConfig(raw, config)
 		}
 	}
+	// No explicit login_mode in the request: the configured mode decides. The
+	// overrides still apply, because the panel's provider selector arrives as
+	// social_provider metadata without a login_mode alongside it.
 	config := loadedConfig()
-	if config.LoginMode == "aws-device" {
-		return startDeviceLogin(raw)
+	applyOAuthOverrides(&config, req.Metadata)
+	switch config.LoginMode {
+	case "aws-device":
+		return startDeviceLoginWithConfig(raw, config)
+	case socialDeviceLoginMode:
+		return startSocialDeviceLoginWithConfig(raw, config)
+	default:
+		return startBrowserLoginWithConfig(raw, config)
 	}
-	return startBrowserLogin(raw)
 }
 
 func rewriteOAuthURLToConsole(raw []byte, baseURL string) []byte {
@@ -126,6 +161,9 @@ func applyOAuthOverrides(config *pluginConfig, metadata map[string]any) {
 	if value := strings.TrimSpace(kironx.String(metadata, "browser_redirect_uri")); value != "" {
 		config.BrowserRedirectURI = value
 	}
+	if value := strings.TrimSpace(kironx.String(metadata, "social_provider")); value != "" {
+		config.SocialProvider = normalizeSocialProvider(value)
+	}
 }
 
 func pollLogin(raw []byte) ([]byte, error) {
@@ -134,6 +172,9 @@ func pollLogin(raw []byte) ([]byte, error) {
 		return nil, errUnmarshal
 	}
 	mode := strings.ToLower(strings.TrimSpace(kironx.String(req.Metadata, "login_mode")))
+	if mode == socialDeviceLoginMode {
+		return pollSocialDeviceLoginRequest(req)
+	}
 	if mode == "aws-device" || (mode == "" && kironx.String(req.Metadata, "device_code") != "") {
 		return pollDeviceLoginRequest(req)
 	}
@@ -320,10 +361,6 @@ func readOAuthCallback(authDir, state string) (oauthCallbackPayload, string, boo
 	return callback, callbackPath, false, nil
 }
 
-func startBrowserLogin(raw []byte) ([]byte, error) {
-	return startBrowserLoginWithConfig(raw, loadedConfig())
-}
-
 func startBrowserLoginWithConfig(raw []byte, config pluginConfig) ([]byte, error) {
 	var req authLoginStartRequest
 	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
@@ -358,7 +395,7 @@ func startBrowserLoginWithConfig(raw []byte, config pluginConfig) ([]byte, error
 	expiresAt := time.Now().UTC().Add(10 * time.Minute)
 	loginState := browserLoginState{
 		Version:      1,
-		LoginMode:    defaultLoginMode,
+		LoginMode:    browserLoginMode,
 		State:        state,
 		CodeVerifier: verifier,
 		RedirectURI:  redirectURI,
@@ -487,14 +524,227 @@ func decodeBrowserLoginState(metadata map[string]any) (browserLoginState, error)
 	if errUnmarshal := json.Unmarshal(raw, &state); errUnmarshal != nil {
 		return state, errUnmarshal
 	}
-	if state.Version != 1 || state.LoginMode != defaultLoginMode || strings.TrimSpace(state.State) == "" || strings.TrimSpace(state.CodeVerifier) == "" || strings.TrimSpace(state.RedirectURI) == "" || strings.TrimSpace(state.TokenURL) == "" {
+	if state.Version != 1 || state.LoginMode != browserLoginMode || strings.TrimSpace(state.State) == "" || strings.TrimSpace(state.CodeVerifier) == "" || strings.TrimSpace(state.RedirectURI) == "" || strings.TrimSpace(state.TokenURL) == "" {
 		return state, fmt.Errorf("incomplete browser login state")
 	}
 	return state, nil
 }
 
-func startDeviceLogin(raw []byte) ([]byte, error) {
-	return startDeviceLoginWithConfig(raw, loadedConfig())
+// startSocialDeviceLoginWithConfig starts a Google/GitHub sign-in through
+// Kiro's own device-authorization endpoints.
+//
+// v0.5.4: this replaces the browser PKCE redirect as the default for new
+// social accounts. The redirect flow cannot work for a social sign-in: the
+// callback carries login_option=github (or google) and no local account, so
+// exchanging its authorization code against Kiro's desktop token endpoint is
+// rejected upstream with "Oops, something went wrong. Please try again later."
+// The device flow sidesteps the callback entirely — the user authorizes on
+// app.kiro.dev and the plugin polls for the token — which also makes it work
+// unchanged for remote or containerized CPA hosts, where a localhost callback
+// could never be reached anyway.
+func startSocialDeviceLoginWithConfig(raw []byte, config pluginConfig) ([]byte, error) {
+	var req authLoginStartRequest
+	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
+		return nil, errUnmarshal
+	}
+	if req.Provider != "" && !strings.EqualFold(req.Provider, providerID) {
+		return errorEnvelope("invalid_provider", "Kiro login received an unexpected provider", false, http.StatusBadRequest), nil
+	}
+
+	provider := normalizeSocialProvider(config.SocialProvider)
+	displayProvider := "Google"
+	if provider == "github" {
+		displayProvider = "Github"
+	}
+	authorizationURL, pollURL, errEndpoints := socialDeviceEndpoints(config.DesktopTokenURL)
+	if errEndpoints != nil {
+		return errorEnvelope("invalid_login_config", errEndpoints.Error(), false, http.StatusInternalServerError), nil
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"clientId":      socialDeviceClientID,
+		"loginProvider": displayProvider,
+	})
+	response, errHTTP := hostHTTPDoCall(hostHTTPRequest{
+		HostCallbackID: req.HostCallbackID,
+		Method:         http.MethodPost,
+		URL:            authorizationURL,
+		Headers: http.Header{
+			"Content-Type": []string{"application/json"},
+			"Accept":       []string{"application/json"},
+			"User-Agent":   []string{"Kiro-CLI"},
+		},
+		Body: body,
+	})
+	if errHTTP != nil {
+		return pluginErrorEnvelope(statusError{Code: "login_network_error", Message: "Kiro social device authorization failed", Retryable: true, HTTPStatus: http.StatusBadGateway, Cause: errHTTP}), nil
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return pluginErrorEnvelope(upstreamStatusError("Kiro social device authorization failed", response.StatusCode, response.Body)), nil
+	}
+	var device socialDeviceAuthorizationResponse
+	if errDecode := json.Unmarshal(response.Body, &device); errDecode != nil {
+		return errorEnvelope("invalid_login_response", "Kiro social device authorization returned invalid JSON", false, http.StatusBadGateway), nil
+	}
+	loginURL := strings.TrimSpace(device.VerificationURIComplete)
+	if loginURL == "" {
+		loginURL = strings.TrimSpace(device.VerificationURI)
+	}
+	// The verification URL is handed to the user's browser, so only Kiro's own
+	// host is acceptable — otherwise a spoofed upstream could phish the code.
+	if strings.TrimSpace(device.DeviceCode) == "" || loginURL == "" || !isTrustedSocialVerificationURL(loginURL) {
+		return errorEnvelope("invalid_login_response", "Kiro social device authorization returned incomplete or unsafe data", false, http.StatusBadGateway), nil
+	}
+	if device.ExpiresInMilliseconds <= 0 {
+		device.ExpiresInMilliseconds = int64((5 * time.Minute) / time.Millisecond)
+	}
+	if device.IntervalInMilliseconds <= 0 {
+		device.IntervalInMilliseconds = int64((5 * time.Second) / time.Millisecond)
+	}
+
+	state := randomID()
+	expiresAt := time.Now().UTC().Add(time.Duration(device.ExpiresInMilliseconds) * time.Millisecond)
+	loginState := socialDeviceLoginState{
+		Version: 1, LoginMode: socialDeviceLoginMode, State: state, ClientID: socialDeviceClientID,
+		DeviceCode: device.DeviceCode, UserCode: device.UserCode, SocialProvider: provider,
+		PollURL: pollURL, APIRegion: configuredAPIRegion(config), ExpiresAt: expiresAt.Format(time.RFC3339),
+		IntervalMilliseconds: device.IntervalInMilliseconds,
+	}
+	metadataRaw, _ := json.Marshal(loginState)
+	var metadata map[string]any
+	_ = json.Unmarshal(metadataRaw, &metadata)
+	setNextDeviceLoginPoll(state, time.Now().UTC().Add(time.Duration(device.IntervalInMilliseconds)*time.Millisecond))
+
+	return okEnvelope(authLoginStartResponse{
+		Provider: providerID, URL: loginURL, State: state, ExpiresAt: expiresAt, Metadata: metadata,
+	})
+}
+
+func pollSocialDeviceLoginRequest(req authLoginPollRequest) ([]byte, error) {
+	loginState, errState := decodeSocialDeviceLoginState(req.Metadata)
+	if errState != nil || strings.TrimSpace(req.State) == "" || loginState.State != req.State {
+		clearDeviceLoginPoll(req.State)
+		return okEnvelope(authLoginPollResponse{Status: "error", Message: "Kiro social login state is invalid or expired"})
+	}
+	expiresAt, errExpiry := time.Parse(time.RFC3339, loginState.ExpiresAt)
+	if errExpiry != nil || !time.Now().UTC().Before(expiresAt) {
+		clearDeviceLoginPoll(req.State)
+		return okEnvelope(authLoginPollResponse{Status: "error", Message: "Kiro social device authorization expired"})
+	}
+	if !deviceLoginPollDue(req.State, time.Now().UTC()) {
+		return okEnvelope(authLoginPollResponse{Status: "pending"})
+	}
+
+	interval := time.Duration(loginState.IntervalMilliseconds) * time.Millisecond
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	setNextDeviceLoginPoll(req.State, time.Now().UTC().Add(interval))
+	body, _ := json.Marshal(map[string]string{
+		"clientId":   loginState.ClientID,
+		"deviceCode": loginState.DeviceCode,
+	})
+	response, errHTTP := hostHTTPDoCall(hostHTTPRequest{
+		HostCallbackID: req.HostCallbackID,
+		Method:         http.MethodPost,
+		URL:            loginState.PollURL,
+		Headers: http.Header{
+			"Content-Type": []string{"application/json"},
+			"Accept":       []string{"application/json"},
+			"User-Agent":   []string{"Kiro-CLI"},
+		},
+		Body: body,
+	})
+	if errHTTP != nil {
+		return okEnvelope(authLoginPollResponse{Status: "pending", Message: "Waiting for Kiro social authorization"})
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		clearDeviceLoginPoll(req.State)
+		return okEnvelope(authLoginPollResponse{Status: "error", Message: upstreamStatusError("Kiro social device poll failed", response.StatusCode, response.Body).Error()})
+	}
+
+	var token socialDevicePollResponse
+	if errDecode := json.Unmarshal(response.Body, &token); errDecode != nil {
+		clearDeviceLoginPoll(req.State)
+		return okEnvelope(authLoginPollResponse{Status: "error", Message: "Kiro social device poll returned invalid JSON"})
+	}
+	if strings.TrimSpace(token.AccessToken) == "" || strings.TrimSpace(token.RefreshToken) == "" {
+		switch strings.ToLower(strings.TrimSpace(token.Status)) {
+		case "authorization_pending", "pending":
+			return okEnvelope(authLoginPollResponse{Status: "pending"})
+		case "slow_down":
+			setNextDeviceLoginPoll(req.State, time.Now().UTC().Add(interval+5*time.Second))
+			return okEnvelope(authLoginPollResponse{Status: "pending"})
+		case "authorization_denied", "access_denied", "denied":
+			clearDeviceLoginPoll(req.State)
+			return okEnvelope(authLoginPollResponse{Status: "error", Message: "Kiro social authorization was denied"})
+		case "expired_token", "expired":
+			clearDeviceLoginPoll(req.State)
+			return okEnvelope(authLoginPollResponse{Status: "error", Message: "Kiro social device authorization expired"})
+		default:
+			clearDeviceLoginPoll(req.State)
+			return okEnvelope(authLoginPollResponse{Status: "error", Message: "Kiro social device poll returned incomplete credentials"})
+		}
+	}
+	if token.ExpiresIn <= 0 {
+		token.ExpiresIn = 3600
+	}
+	providerLabel := "Google"
+	if loginState.SocialProvider == "github" {
+		providerLabel = "GitHub"
+	}
+	credential := credential{
+		Version: 1, AuthID: oauthCredentialID(loginState.SocialProvider, req.State), Mode: "copy", SourceKind: "oauth_social_device",
+		AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, ProfileARN: token.ProfileARN, SSORegion: defaultRegion,
+		APIRegion: kironx.NonEmpty(strings.TrimSpace(loginState.APIRegion), defaultRegion), ExpiresAt: time.Now().UTC().Add(time.Duration(token.ExpiresIn) * time.Second).Format(time.RFC3339),
+		SocialProvider: loginState.SocialProvider, Label: "Kiro " + providerLabel,
+	}
+	credential, _, _ = ensureProfileARN(credential, req.HostCallbackID)
+	auth, errAuth := authDataFromCredential(credential)
+	if errAuth != nil {
+		clearDeviceLoginPoll(req.State)
+		return nil, errAuth
+	}
+	clearDeviceLoginPoll(req.State)
+	return okEnvelope(authLoginPollResponse{Status: "success", Auth: auth})
+}
+
+func decodeSocialDeviceLoginState(metadata map[string]any) (socialDeviceLoginState, error) {
+	var state socialDeviceLoginState
+	raw, errMarshal := json.Marshal(metadata)
+	if errMarshal != nil {
+		return state, errMarshal
+	}
+	if errUnmarshal := json.Unmarshal(raw, &state); errUnmarshal != nil {
+		return state, errUnmarshal
+	}
+	if state.Version != 1 || state.LoginMode != socialDeviceLoginMode || strings.TrimSpace(state.State) == "" || strings.TrimSpace(state.ClientID) == "" || strings.TrimSpace(state.DeviceCode) == "" || strings.TrimSpace(state.PollURL) == "" {
+		return state, fmt.Errorf("incomplete social device login state")
+	}
+	state.SocialProvider = normalizeSocialProvider(state.SocialProvider)
+	state.APIRegion = kironx.NonEmpty(strings.TrimSpace(state.APIRegion), defaultRegion)
+	return state, nil
+}
+
+// socialDeviceEndpoints derives the device-authorization and poll endpoints
+// from the configured auth-service URL, so a private gateway override works the
+// same way it does for the token endpoint.
+func socialDeviceEndpoints(tokenURL string) (string, string, error) {
+	parsed, errParse := url.Parse(strings.TrimSpace(tokenURL))
+	if errParse != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Host == "" {
+		return "", "", fmt.Errorf("Kiro auth service URL is invalid")
+	}
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	parsed.Path = "/oauth/device/authorization"
+	authorizationURL := parsed.String()
+	parsed.Path = "/oauth/device/poll"
+	return authorizationURL, parsed.String(), nil
+}
+
+func isTrustedSocialVerificationURL(raw string) bool {
+	parsed, errParse := url.Parse(strings.TrimSpace(raw))
+	return errParse == nil && parsed.Scheme == "https" && parsed.User == nil && strings.EqualFold(parsed.Hostname(), "app.kiro.dev")
 }
 
 func startDeviceLoginWithConfig(raw []byte, config pluginConfig) ([]byte, error) {

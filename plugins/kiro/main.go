@@ -103,7 +103,8 @@ var pluginConfigFields = struct {
 	ConfigFields []pluginapi.ConfigField
 }{ConfigFields: []pluginapi.ConfigField{
 	{Name: "import_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"reference", "copy"}, Description: "Default credential import ownership mode. reference follows the original kiro-cli/Amazon Q files; copy stores an independent snapshot."},
-	{Name: "login_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"kiro-browser", "aws-device"}, Description: "Flow used for NEW logins. aws-device supports Builder ID and IAM Identity Center (organization) accounts and is recommended for remote CPA servers."},
+	{Name: "login_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"kiro-browser", "social-device", "aws-device"}, Description: "Flow used for NEW logins. social-device is Google/GitHub sign-in and is recommended for those accounts; aws-device supports Builder ID and IAM Identity Center (organization) accounts."},
+	{Name: "social_provider", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"google", "github"}, Description: "Identity provider used by login_mode social-device. Defaults to google."},
 	{Name: "api_region", Type: pluginapi.ConfigFieldTypeString, Description: "Kiro runtime region, usually us-east-1; independent of the AWS SSO region."},
 	{Name: "sso_region", Type: pluginapi.ConfigFieldTypeString, Description: "Fallback AWS SSO OIDC region."},
 	{Name: "sso_start_url", Type: pluginapi.ConfigFieldTypeString, Description: "Determines the aws-device account type: https://view.awsapps.com/start for Builder ID, or the organization's AWS access portal URL for IAM Identity Center."},

@@ -26,8 +26,22 @@ const (
 	// browser can fetch directly. This is Kiro's own published icon.
 	pluginLogoURL = "https://kiro.dev/icon.svg"
 
-	defaultSSOStartURL    = "https://view.awsapps.com/start"
-	defaultLoginMode      = "kiro-browser"
+	defaultSSOStartURL = "https://view.awsapps.com/start"
+
+	// defaultLoginMode is the flow a NEW login uses when the host config says
+	// nothing. It is social-device rather than kiro-browser because Kiro's
+	// desktop token endpoint now rejects the browser authorization codes minted
+	// for social (Google/GitHub) accounts — the exchange fails with
+	// "Oops, something went wrong. Please try again later." and no credential is
+	// ever produced. The social device flow authorizes on app.kiro.dev and polls
+	// for the token, so it never exchanges a code and also works when CPA runs
+	// remotely, where the localhost redirect of the browser flow is unreachable.
+	// kiro-browser stays available for accounts that still require it.
+	defaultLoginMode      = "social-device"
+	browserLoginMode      = "kiro-browser"
+	socialDeviceLoginMode = "social-device"
+	defaultSocialProvider = "google"
+	socialDeviceClientID  = "kiro-cli"
 	defaultSignInURL      = "https://app.kiro.dev/signin"
 	defaultRedirectURI    = "http://localhost:3128"
 	defaultIDCRedirectURI = "http://localhost:3128/signin/callback"
@@ -104,6 +118,7 @@ type credential struct {
 	Mode           string   `json:"mode"`
 	SourcePath     string   `json:"source_path,omitempty"`
 	SourceKind     string   `json:"source_kind,omitempty"`
+	SocialProvider string   `json:"social_provider,omitempty"`
 	SourceTokenKey string   `json:"source_token_key,omitempty"`
 	AccessToken    string   `json:"access_token,omitempty"`
 	RefreshToken   string   `json:"refresh_token"`
@@ -220,6 +235,23 @@ type idcBrowserLoginState struct {
 	StartURL     string   `json:"start_url"`
 	ExpiresAt    string   `json:"expires_at"`
 	Scopes       []string `json:"scopes"`
+}
+
+// socialDeviceLoginState is the polling context for a Google/GitHub device
+// authorization. Unlike the browser flows there is no callback at all: the
+// plugin polls Kiro's device endpoint until the user finishes in the browser.
+type socialDeviceLoginState struct {
+	Version              int    `json:"version"`
+	LoginMode            string `json:"login_mode"`
+	State                string `json:"state"`
+	ClientID             string `json:"client_id"`
+	DeviceCode           string `json:"device_code"`
+	UserCode             string `json:"user_code,omitempty"`
+	SocialProvider       string `json:"social_provider"`
+	PollURL              string `json:"poll_url"`
+	APIRegion            string `json:"api_region"`
+	ExpiresAt            string `json:"expires_at"`
+	IntervalMilliseconds int64  `json:"interval_milliseconds"`
 }
 
 type oauthCallbackPayload struct {
@@ -382,7 +414,8 @@ type managementRequest struct {
 }
 
 type reloginRequest struct {
-	AuthIndex string `json:"auth_index"`
+	AuthIndex      string `json:"auth_index"`
+	SocialProvider string `json:"social_provider,omitempty"`
 }
 
 type reloginStatusRequest struct {
@@ -419,6 +452,7 @@ type hostAuthGetResponse struct {
 type pluginConfig struct {
 	ImportMode         string   `json:"import_mode"`
 	LoginMode          string   `json:"login_mode"`
+	SocialProvider     string   `json:"social_provider"`
 	StaticModels       []string `json:"static_models"`
 	APIRegion          string   `json:"api_region"`
 	SSORegion          string   `json:"sso_region"`

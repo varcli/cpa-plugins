@@ -156,11 +156,15 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button id="refreshBtn" onclick="load(true,this)">刷新数据</button>
     <button class="sec" onclick="refreshQuota(this)" title="重新向上游查询 GetUsageLimits（不发送模型请求）">刷新配额</button>
     <button class="sec" onclick="loginStart(this)">新增 Kiro 账号</button>
+    <select id="socialProvider" class="field-input" title="social-device 登录使用哪个第三方账号">
+      <option value="google">Google 账号</option>
+      <option value="github">GitHub 账号</option>
+    </select>
     <span class="toggle" id="svtime"></span>
   </div>
   <div class="card" style="margin-bottom:16px">
     <div id="loginStatus" style="margin-bottom:6px;padding:6px 8px;border:1px solid rgba(128,128,128,.35);border-radius:6px;color:var(--mut);font-size:12px;line-height:1.5;word-break:break-all;max-height:9em;overflow-y:auto">登录状态：未开始</div>
-    <div style="margin-bottom:6px;color:var(--mut)">浏览器登录完成后若停在「无法连接 127.0.0.1:&lt;端口&gt;」页面，把地址栏完整链接粘贴到此处提交即可完成登录（无需改写前缀）。设备码登录请直接访问上方给出的验证地址并输入用户码。</div>
+    <div style="margin-bottom:6px;color:var(--mut)">Google / GitHub 账号走设备码流程：插件会打开 app.kiro.dev 的验证页，在页面完成授权后回来点「检查状态」即可，无需粘贴任何链接。<span style="opacity:.75">若 login_mode 配成 kiro-browser，浏览器停在「无法连接 127.0.0.1:&lt;端口&gt;」时把地址栏完整链接粘贴到此处提交（无需改写前缀）；aws-device 请访问验证地址并输入用户码。</span></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <input id="cbPaste" type="text" placeholder="http://localhost:3128/signin/callback?code=…&amp;state=…" class="field-input" style="flex:1;min-width:240px">
       <button onclick="submitCallbackURL(this)">完成登录</button>
@@ -397,7 +401,10 @@ function accountKind(a){
 async function loginStart(btn){
   busy(btn,true);
   try{
-    const data=await api("/oauth/login/start",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders(getKey())),body:"{}"});
+    // 直接带上 social_provider，面板就不必与宿主配置保持同步：插件按 metadata
+    // 覆盖本次登录使用的第三方账号（google / github）。
+    const body={social_provider:socialProvider()};
+    const data=await api("/oauth/login/start",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders(getKey())),body:JSON.stringify(body)});
     loginMode="login";
     loginState=(data&&data.state)||"";
     const url=(data&&data.url)||"";
@@ -413,6 +420,11 @@ async function loginStart(btn){
    取决于当前登录是哪种。 */
 function loginStatusEndpoint(){
   return loginMode==="relogin"?"/oauth/relogin/status":"/oauth/login/status";
+}
+/* 第三方账号选择器只对 social-device 有意义，其余流程忽略该字段。 */
+function socialProvider(){
+  const el=document.getElementById("socialProvider");
+  return (el&&el.value)==="github"?"github":"google";
 }
 async function loginPoll(btn){
   if(btn)busy(btn,true);
@@ -512,7 +524,7 @@ async function relogin(authIndex, btn){
     const data=await api("/oauth/relogin/start",{
       method:"POST",
       headers:Object.assign({"Content-Type":"application/json"},authHeaders(getKey())),
-      body:JSON.stringify({auth_index:authIndex})
+      body:JSON.stringify({auth_index:authIndex,social_provider:socialProvider()})
     });
     loginMode="relogin";
     loginState=(data&&data.state)||"";

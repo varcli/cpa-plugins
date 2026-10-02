@@ -36,6 +36,18 @@ func decodeManagementBody(t *testing.T, raw []byte) (status int, payload map[str
 	return resp.StatusCode, payload
 }
 
+// useBrowserLoginMode pins the plugin config to the kiro-browser flow for one
+// test. The default is social-device, whose start step contacts Kiro's device
+// authorization endpoint — which these tests do not stub.
+func useBrowserLoginMode(t *testing.T) {
+	t.Helper()
+	original := loadedConfig()
+	config := original
+	config.LoginMode = browserLoginMode
+	configValue.Store(config)
+	t.Cleanup(func() { configValue.Store(original) })
+}
+
 // seedConsoleOAuthSession registers a full browser login session the way
 // startBrowserLoginWithConfig does: the in-memory session (consumed by the
 // callback path) plus the console-side metadata (consumed by the poll path).
@@ -43,7 +55,7 @@ func seedConsoleOAuthSession(t *testing.T, state string) {
 	t.Helper()
 	loginState := browserLoginState{
 		Version:      1,
-		LoginMode:    defaultLoginMode,
+		LoginMode:    browserLoginMode,
 		State:        state,
 		CodeVerifier: "verifier",
 		RedirectURI:  "http://localhost:3128",
@@ -178,7 +190,7 @@ func TestReloginStatusConsumesPastedCallback(t *testing.T) {
 
 	rawState, _ := json.Marshal(browserLoginState{
 		Version:      1,
-		LoginMode:    defaultLoginMode,
+		LoginMode:    browserLoginMode,
 		State:        state,
 		CodeVerifier: "verifier",
 		RedirectURI:  "http://localhost:3128",
@@ -227,6 +239,7 @@ func TestReloginStatusConsumesPastedCallback(t *testing.T) {
 // The hand-seeded tests above would still pass if starting a login stored its
 // state somewhere the callback path never looks; this one would not.
 func TestConsoleOAuthPanelFlowStartThenPaste(t *testing.T) {
+	useBrowserLoginMode(t)
 	// The sign-in URL and token endpoint are never contacted at start time, so
 	// only the token exchange and the credential save need stubbing.
 	originalHTTP, originalCall := hostHTTPDoCall, callHostCall
@@ -299,6 +312,7 @@ func TestConsoleOAuthPanelFlowStartThenPaste(t *testing.T) {
 // seconds after it started, and pasting the callback then 404s with
 // unknown_state.
 func TestConsolePollBeforePasteKeepsSessionAlive(t *testing.T) {
+	useBrowserLoginMode(t)
 	originalHTTP, originalCall := hostHTTPDoCall, callHostCall
 	hostHTTPDoCall = func(req hostHTTPRequest) (hostHTTPResponse, error) {
 		return hostHTTPResponse{

@@ -193,6 +193,7 @@ func credentialFromMap(data map[string]any, sourcePath, sourceKind, mode string)
 		Mode:           normalizeMode(persistedMode),
 		SourcePath:     persistedSourcePath,
 		SourceKind:     persistedSourceKind,
+		SocialProvider: kironx.String(data, "social_provider"),
 		SourceTokenKey: kironx.String(data, "source_token_key"),
 		AccessToken:    kironx.String(data, "accessToken", "access_token"),
 		RefreshToken:   kironx.String(data, "refreshToken", "refresh_token"),
@@ -385,10 +386,41 @@ func authDataFromCredential(cred credential) (authData, error) {
 		FileName:         id + ".json",
 		Label:            cred.Label,
 		StorageJSON:      storage,
-		Metadata:         map[string]any{"auth_type": cred.AuthType, "source_kind": cred.SourceKind},
-		Attributes:       map[string]string{"auth_provider": providerID, "api_region": cred.APIRegion},
+		Metadata:         credentialMetadata(cred),
+		Attributes:       credentialAttributes(cred),
 		NextRefreshAfter: nextRefresh,
 	}, nil
+}
+
+// credentialMetadata / credentialAttributes mirror the reference project's
+// split: the social identity provider is surfaced only for the providers the
+// social-device flow can actually produce, so a stray persisted value cannot
+// leak into the host's auth records.
+func credentialMetadata(cred credential) map[string]any {
+	metadata := map[string]any{"auth_type": cred.AuthType, "source_kind": cred.SourceKind}
+	if provider := strings.ToLower(strings.TrimSpace(cred.SocialProvider)); provider == "google" || provider == "github" {
+		metadata["social_provider"] = provider
+	}
+	return metadata
+}
+
+func credentialAttributes(cred credential) map[string]string {
+	attributes := map[string]string{"auth_provider": providerID, "api_region": cred.APIRegion}
+	if provider := strings.ToLower(strings.TrimSpace(cred.SocialProvider)); provider == "google" || provider == "github" {
+		attributes["social_provider"] = provider
+	}
+	return attributes
+}
+
+// oauthCredentialID derives a stable per-authorization credential id. The
+// identity is the social provider plus the authorization's own state, so each
+// completed authorization gets its own file: signing the same Google or GitHub
+// provider in again yields a separate account instead of overwriting the
+// existing one.
+func oauthCredentialID(socialProvider, state string) string {
+	identity := "oauth\x00" + strings.TrimSpace(socialProvider) + "\x00" + strings.TrimSpace(state)
+	sum := sha256.Sum256([]byte(identity))
+	return "kiro-" + hex.EncodeToString(sum[:10])
 }
 
 func credentialID(cred credential) string {
