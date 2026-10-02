@@ -66,6 +66,14 @@ CGO_ENABLED=1 go build -buildmode=c-shared -o kiro.so .
 
 粘贴框同时服务于「新增账号」与卡片上的「重新登录」：插件会按当前登录类型把回调提交到对应端点（`/oauth/login/status` 或 `/oauth/relogin/status`）。
 
+### CPA 自带的新增账号
+
+CPA 自带的「新增账号」入口（v8：`/v8/management/oauth/auth-url?provider=kiro`，v0：`GET /v0/management/kiro-auth-url`）与插件面板走同一条登录流程，两者都可正常使用：
+
+- **social-device / aws-device / kiro-browser 的默认路径**都是设备码或轮询流程，`auth.login.poll` 会直接向上游换 token，**不需要回调**，因此在自带入口里点完即可，授权完成后自带界面会自行轮询到成功。
+- 自带入口返回的 `url` 就是上游真实授权地址（不再被改写成面板链接），所以用户在自带界面拿到的就是该打开的地址。
+- 若走的是会回跳 localhost 的 `kiro-browser` 流程，浏览器可能停在「无法连接 127.0.0.1」，此时把完整链接粘到**插件面板**的粘贴框提交即可；自带界面没有粘贴框，只有插件面板有。
+
 ### 导入已有凭证
 
 ```bash

@@ -82,14 +82,48 @@ type socialDevicePollResponse struct {
 	ExpiresIn        int    `json:"expiresIn"`
 }
 
+// startLogin answers auth.login.start for BOTH callers of the flow:
+//
+//   - CPA's built-in "add account" UI (v8: GET /v8/management/oauth/auth-url,
+//     v0: GET /v0/management/<id>-auth-url), which polls /oauth/status and
+//     saves whatever the poll returns. It needs the REAL upstream
+//     authorization URL: that URL is what the user must open to finish a device
+//     flow, and it is also what the built-in global paste box expects a callback
+//     for. Rewriting it to a panel link (see git history) made the built-in UI
+//     open the plugin panel instead, so the device flow could never be
+//     completed from there and the session polled "pending" until it expired.
+//
+//   - the plugin's own panel, which calls startLogin through
+//     /oauth/login/start and drives its own session.
+//
+// The state is registered in consoleOAuthSessions for both, because the
+// panel's poll route is the only one that consumes that map; registering an
+// unused entry for the built-in path costs nothing and keeps one code path.
 func startLogin(raw []byte) ([]byte, error) {
 	var req authLoginStartRequest
 	_ = json.Unmarshal(raw, &req)
 	result, err := startLoginInternal(raw, req)
-	if err != nil || len(req.Metadata) > 0 || strings.TrimSpace(req.BaseURL) == "" {
+	if err != nil {
 		return result, err
 	}
-	return rewriteOAuthURLToConsole(result, req.BaseURL), nil
+	return rememberConsoleSession(result), nil
+}
+
+// rememberConsoleSession records the started session so the panel's status
+// route can poll it, and returns the response unchanged.
+func rememberConsoleSession(raw []byte) []byte {
+	var env envelope
+	if json.Unmarshal(raw, &env) != nil || !env.OK {
+		return raw
+	}
+	var started authLoginStartResponse
+	if json.Unmarshal(env.Result, &started) != nil || strings.TrimSpace(started.State) == "" {
+		return raw
+	}
+	consoleOAuthSessions.Lock()
+	consoleOAuthSessions.metadata[started.State] = started.Metadata
+	consoleOAuthSessions.Unlock()
+	return raw
 }
 
 func startLoginInternal(raw []byte, req authLoginStartRequest) ([]byte, error) {
@@ -121,31 +155,6 @@ func startLoginInternal(raw []byte, req authLoginStartRequest) ([]byte, error) {
 	default:
 		return startBrowserLoginWithConfig(raw, config)
 	}
-}
-
-func rewriteOAuthURLToConsole(raw []byte, baseURL string) []byte {
-	var env envelope
-	if json.Unmarshal(raw, &env) != nil || !env.OK {
-		return raw
-	}
-	var started authLoginStartResponse
-	if json.Unmarshal(env.Result, &started) != nil || strings.TrimSpace(started.State) == "" {
-		return raw
-	}
-	consoleOAuthSessions.Lock()
-	consoleOAuthSessions.metadata[started.State] = started.Metadata
-	consoleOAuthSessions.Unlock()
-	// Return a same-origin management-panel route. A relative URL lets the
-	// browser preserve the public CPA hostname (instead of exposing the
-	// backend's 127.0.0.1:8317 /v0 resource URL). The console starts its own
-	// OAuth session after opening, so the original host-side state is not
-	// needed in this navigation link.
-	if strings.TrimSpace(baseURL) == "" {
-		return raw
-	}
-	started.URL = "/management.html#/plugin-pages/kiro/0"
-	env.Result = mustJSON(started)
-	return mustJSON(env)
 }
 
 func applyOAuthOverrides(config *pluginConfig, metadata map[string]any) {
