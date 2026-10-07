@@ -198,6 +198,13 @@ func configureCallbackPort(lines []string) {
 // default mid-flight broke INTL logins by rerouting their polls.
 func configureVariant(raw []byte) {
 	next := ""
+	// v0.13.0: model_prefix / enable_model_prefix ride the same lifecycle
+	// payload as login_variant. Unlike login_variant they are not sticky:
+	// a key absent from the config simply restores the default (trae/ + on),
+	// so the advertised namespace is always a pure function of the current
+	// config.
+	nextPrefix := defaultModelPrefix
+	nextPrefixEnabled := true
 	if len(raw) > 0 {
 		var req struct {
 			ConfigYAML []byte `json:"config_yaml"`
@@ -226,6 +233,14 @@ func configureVariant(raw []byte) {
 						oauthAppVersionMu.Unlock()
 					}
 				}
+				if v, present := m["model_prefix"]; present {
+					if p := strings.TrimSpace(configScalarString(v)); p != "" {
+						nextPrefix = p
+					}
+				}
+				if v, present := m["enable_model_prefix"]; present {
+					nextPrefixEnabled = configScalarBool(v)
+				}
 			}
 			if next != "" && loadedLoginVariant() != next {
 				log.Printf("trae: login_variant=%s applied (new logins target %s)", next, strings.ToUpper(next))
@@ -234,6 +249,9 @@ func configureVariant(raw []byte) {
 			configureCallbackPort(lines)
 		}
 	}
+	// Applied unconditionally (non-sticky): the model namespace must follow the
+	// current config even when login_variant is absent from this payload.
+	setModelPrefixConfig(nextPrefix, nextPrefixEnabled)
 	if next == "" {
 		return
 	}

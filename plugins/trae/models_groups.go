@@ -165,7 +165,11 @@ func buildModelGroup(variant string, entries []*variantCatalogEntry, refresh boo
 	}
 
 	if best != nil {
-		g.Models = modelGroupEntries(best.Models)
+		// v0.13.0: normalize the snapshot to the CURRENT advertised namespace
+		// (prefix re-applied, legacy bare/suffixed ids folded in) — the picker
+		// writes oauth-excluded-models entries and they must key on the exact
+		// ids the host has registered.
+		g.Models = modelGroupEntries(unprefixModelInfos(best.Models))
 		g.Count = len(g.Models)
 		g.Source = "snapshot"
 		g.FetchedAt = best.FetchedAt

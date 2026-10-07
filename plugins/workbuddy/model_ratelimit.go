@@ -155,7 +155,10 @@ type modelRateLimitRegistry struct {
 var wbModelRateLimits = &modelRateLimitRegistry{entries: map[string]time.Time{}}
 
 func modelRateLimitKey(uid, model string) string {
-	return strings.TrimSpace(uid) + "\x1f" + strings.ToLower(strings.TrimSpace(model))
+	// v0.13.0: callers hand in the pre-prefix (advertised) and post-prefix
+	// (upstream) spellings of the same model — normalize to the bare id so the
+	// registry has one entry per model, not one per spelling.
+	return strings.TrimSpace(uid) + "\x1f" + strings.ToLower(stripModelPrefix(model))
 }
 
 func (r *modelRateLimitRegistry) note(key string, resetAt, now time.Time) {

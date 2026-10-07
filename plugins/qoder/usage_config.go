@@ -78,6 +78,9 @@ func configure(raw []byte) {
 	nextLoginRegion := "" // sticky: empty = keep current (issue #24)
 	nextMgmtKey := ""
 	nextStreamHeadTimeout := 0
+	// v0.13.0: not sticky — an absent key means the default (qoder/ + on).
+	nextModelPrefix := defaultModelPrefix
+	nextModelPrefixEnabled := true
 
 	cfgURL, cfgKey := "", ""
 	if len(raw) > 0 {
@@ -120,6 +123,14 @@ func configure(raw []byte) {
 					if secs, errParse := strconv.Atoi(configScalarString(v)); errParse == nil {
 						nextStreamHeadTimeout = secs
 					}
+				}
+				if v, present := m["model_prefix"]; present {
+					if p := strings.TrimSpace(configScalarString(v)); p != "" {
+						nextModelPrefix = p
+					}
+				}
+				if v, present := m["enable_model_prefix"]; present {
+					nextModelPrefixEnabled = configScalarBool(v)
 				}
 			}
 			for _, line := range strings.Split(string(req.ConfigYAML), "\n") {
@@ -171,9 +182,25 @@ func configure(raw []byte) {
 						nextStreamHeadTimeout = secs
 					}
 				}
+				if strings.HasPrefix(line, "model_prefix:") {
+					v := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "model_prefix:")), "\"'")
+					if v != "" {
+						nextModelPrefix = v
+					}
+				}
+				if strings.HasPrefix(line, "enable_model_prefix:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "enable_model_prefix:"))
+					v = strings.Trim(v, "\"'")
+					nextModelPrefixEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
 			}
 		}
 	}
+
+	// v0.13.0: the advertised model namespace follows the current config on
+	// every register/reconfigure (non-sticky). Applied before the model serve
+	// paths can observe it.
+	setModelPrefixConfig(nextModelPrefix, nextModelPrefixEnabled)
 
 	// Apply each setting under its own lock — no nesting.
 	checkinAutoMu.Lock()

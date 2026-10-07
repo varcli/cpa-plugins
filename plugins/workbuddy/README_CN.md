@@ -117,6 +117,15 @@ plugins:
       usage_report_url: "http://cpa-manager-plus:18317/v0/management/usage/import"
       usage_report_key: ""
 
+      # 注册到 CPA 的模型 ID 前缀（默认 "workbuddy/"，开关默认开）。
+      # 注册 ID 形如 workbuddy/<上游 id>，例如 workbuddy/glm-5.2，
+      # 模型因此在 CPA 模型页归到 workbuddy 分组，不会与其他 provider
+      # 同名模型混在一起。执行器转发上游前会剥掉该前缀（宿主只剥凭据
+      # 自己的 auth.Prefix，不剥插件前缀）。enable_model_prefix: false
+      # 可关闭，回到裸 ID。
+      model_prefix: "workbuddy/"
+      enable_model_prefix: true
+
       # 插件层 management 鉴权。设置后所有 /v0/management/plugins/workbuddy/*
       # 写端点要求该 Bearer token。空（默认）则只靠宿主 management middleware。
       # 也可从 WB_MANAGEMENT_KEY 环境变量读。
@@ -132,7 +141,21 @@ plugins:
 ```
 
 模型 alias 和排除走 CPA 原生 `oauth-model-alias` 和 `oauth-excluded-models`
-配置，无需插件侧重复。
+配置，无需插件侧重复。两者按**注册后的 ID**（含 `workbuddy/` 前缀，如
+`workbuddy/glm-5.2`）匹配。
+
+### 模型 ID
+
+本插件注册的每个模型都带 `workbuddy/` 前缀：
+
+| 上游 ID | 注册 ID |
+|---|---|
+| `glm-5.2` | `workbuddy/glm-5.2` |
+| `deepseek-v4.1` | `workbuddy/deepseek-v4.1` |
+
+这个前缀让模型在 CPA 模型页归到 `workbuddy` 分组。前缀只在**出屏边界**加：
+`model.for_auth`、模型排除选择器、`model.groups`；发现缓存、落盘快照、
+限流登账仍以裸上游 ID 为键，因此既有落盘状态无需迁移。
 
 ## 生命周期
 

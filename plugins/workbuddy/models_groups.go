@@ -201,20 +201,27 @@ func pickRefreshCredential(entries []*realmCatalogEntry) *realmCatalogEntry {
 }
 
 // modelGroupEntries projects ModelInfos into picker rows (id + display name).
+// v0.13.0: the advertised model prefix is applied here so the picker writes
+// oauth-excluded-models entries keyed on the exact ids the host registered
+// (exclusion patterns match the advertised id), and the "name == id → drop"
+// rule compares the DISPLAY name against the BASE id — the prefix is
+// namespace, not a label, and must not survive into the picker text.
+// addModelPrefix is idempotent, so callers that already prefixed are unaffected.
 func modelGroupEntries(models []pluginapi.ModelInfo) []modelGroupEntry {
 	out := make([]modelGroupEntry, 0, len(models))
 	for _, m := range models {
-		if m.ID == "" {
+		base := strings.TrimSpace(m.ID)
+		if base == "" {
 			continue
 		}
 		name := m.DisplayName
 		if name == "" {
 			name = m.Name
 		}
-		if strings.EqualFold(name, m.ID) {
+		if strings.EqualFold(name, base) || strings.EqualFold(name, addModelPrefix(base)) {
 			name = ""
 		}
-		out = append(out, modelGroupEntry{ID: m.ID, Name: name})
+		out = append(out, modelGroupEntry{ID: addModelPrefix(base), Name: name})
 	}
 	return out
 }

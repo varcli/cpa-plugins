@@ -70,7 +70,7 @@ func TestModelGroupsSnapshotAggregation(t *testing.T) {
 	if gCN.Count != 2 || len(gCN.Models) != 2 {
 		t.Fatalf("cn group = %d models, want 2 (newest snapshot wins)", gCN.Count)
 	}
-	if gCN.Models[0].ID != "m-cn-a" || gCN.Models[1].ID != "m-cn-b" {
+	if gCN.Models[0].ID != "qoder/m-cn-a" || gCN.Models[1].ID != "qoder/m-cn-b" {
 		t.Fatalf("cn models = %v,%v — stale snapshot leaked", gCN.Models[0].ID, gCN.Models[1].ID)
 	}
 	if gCN.Source != "snapshot" || gCN.FetchedAt != "2026-09-27T00:00:00Z" {
@@ -84,7 +84,7 @@ func TestModelGroupsSnapshotAggregation(t *testing.T) {
 	}
 
 	gIN := groups["intl"]
-	if gIN.Count != 1 || gIN.Models[0].ID != "m-in-1" {
+	if gIN.Count != 1 || gIN.Models[0].ID != "qoder/m-in-1" {
 		t.Fatalf("intl group wrong: %+v", gIN.Models)
 	}
 }
@@ -118,7 +118,7 @@ func TestModelGroupsRefresh(t *testing.T) {
 		t.Fatalf("status = %d", status)
 	}
 	cnGroup := groupsByRegion(t, payload)["cn"]
-	if cnGroup.Source != "refreshed" || cnGroup.Count != 3 || cnGroup.Models[0].ID != "m-fresh-1" {
+	if cnGroup.Source != "refreshed" || cnGroup.Count != 3 || cnGroup.Models[0].ID != "qoder/m-fresh-1" {
 		t.Fatalf("refresh group = source %q count %d — fresh discovery should win", cnGroup.Source, cnGroup.Count)
 	}
 	if cnGroup.FetchedAt == "" || strings.HasPrefix(cnGroup.FetchedAt, "2026-09-01") {
@@ -140,7 +140,7 @@ func TestModelGroupsRefresh(t *testing.T) {
 		t.Fatalf("status = %d", status)
 	}
 	cnGroup = groupsByRegion(t, payload)["cn"]
-	if cnGroup.Count != 3 || cnGroup.Models[0].ID != "m-fresh-1" {
+	if cnGroup.Count != 3 || cnGroup.Models[0].ID != "qoder/m-fresh-1" {
 		t.Fatalf("refresh fallback should serve the freshly re-stamped snapshot, got %+v", cnGroup.Models)
 	}
 }

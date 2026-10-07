@@ -491,7 +491,7 @@ func handleModelStatic(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	cacheModelAliases(req.Host)
-	models := fetchDynamicModels()
+	models := prefixModelInfos(fetchDynamicModels())
 	models = filterExcludedModels(models, req.Host)
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }
@@ -507,8 +507,14 @@ func handleModelForAuth(raw []byte) ([]byte, error) {
 	// auth file carries a non-canonical provider string.
 	cacheModelAliases(req.Host)
 	models := fetchDynamicModelsFromStorage(req.StorageJSON)
-	// v0.8.26: filter at BOTH granularities — the provider key (whole
-	// plugin) and this credential's region sub-key (channel-scoped).
+	// v0.13.0: advertise every id in the plugin's model namespace
+	// ("qoder/…"). Applied at the serve boundary — discovery assembly, the
+	// cooldown table and the persisted (raw) snapshot keep keying on bare
+	// upstream keys. addModelPrefix is idempotent.
+	models = prefixModelInfos(models)
+	// v0.8.26: exclusions re-apply at BOTH granularities — the provider key
+	// (whole plugin) and this credential's region sub-key (channel-scoped) —
+	// AFTER the prefix, because exclusion patterns match the advertised id.
 	if sa, perr := parseStored(req.StorageJSON); perr == nil && sa != nil {
 		models = filterExcludedModelsForRegion(models, req.Host, authRegion(sa))
 	} else {

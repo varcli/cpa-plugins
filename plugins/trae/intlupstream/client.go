@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -146,8 +147,15 @@ func buildHeaders(a *Auth) http.Header {
 //	"work" / "auto-work" / "solo-work" → mode=work, strategy=auto, modelName=""
 //	"auto" / ""                          → mode=code, strategy=auto, modelName=""
 //	other (e.g. "gpt-5.2")              → mode=code, strategy=manual, modelName=model
+//
+// The client-facing namespaces — the plugin's "trae/" model prefix and the
+// "-intl" suffix — are both stripped, because the upstream session API only
+// knows the bare model name. v0.13.0: stripping is applied to BOTH the body
+// name and the host-resolved name (the host dispatches the registered id
+// verbatim, prefix included), and the virtual auto/work names match with or
+// without the prefix.
 func resolveMode(model string) (mode, strategy, modelName string) {
-	m := strings.ToLower(strings.TrimSpace(model))
+	m := strings.ToLower(StripModelPrefix(strings.TrimSpace(model)))
 	if m == "work" || m == "auto-work" || m == "solo-work" {
 		return "work", "auto", ""
 	}
@@ -158,7 +166,60 @@ func resolveMode(model string) (mode, strategy, modelName string) {
 	// (intl_main.go appends it to every advertised id). The upstream session
 	// API only knows the bare model name — a suffixed id sent verbatim as
 	// model_name creates the session with an unknown model.
-	return "code", "manual", strings.TrimSuffix(strings.TrimSpace(model), "-intl")
+	return "code", "manual", strings.TrimSuffix(StripModelPrefix(strings.TrimSpace(model)), "-intl")
+}
+
+// -----------------------------------------------------------------------------
+// Advertised model prefix (v0.13.0)
+// -----------------------------------------------------------------------------
+//
+// The Intl request path must strip the plugin's "trae/" prefix before the id
+// reaches the session API (the host dispatches registered ids verbatim). The
+// prefix lives in main.go, which cannot be imported here, so it is injected —
+// the same split as upstream.SetModelPrefix. defaultAdvertisedModelPrefix
+// mirrors main.go's built-in value.
+const defaultAdvertisedModelPrefix = "trae/"
+
+var (
+	advertisedModelPrefixMu sync.RWMutex
+	advertisedModelPrefix   = defaultAdvertisedModelPrefix
+)
+
+// SetModelPrefix wires the effective advertised model prefix ("" when the
+// enable_model_prefix toggle is off). Called from main.go on every
+// register/reconfigure.
+func SetModelPrefix(prefix string) {
+	advertisedModelPrefixMu.Lock()
+	advertisedModelPrefix = strings.TrimSpace(prefix)
+	advertisedModelPrefixMu.Unlock()
+}
+
+// modelPrefixCandidates returns the prefixes an id may carry, longest first;
+// the built-in default is always a candidate so ids registered while the
+// prefix was on are still stripped after the operator changes or disables it.
+func modelPrefixCandidates() []string {
+	advertisedModelPrefixMu.RLock()
+	p := advertisedModelPrefix
+	advertisedModelPrefixMu.RUnlock()
+	if p == "" {
+		return nil
+	}
+	if p == defaultAdvertisedModelPrefix {
+		return []string{p}
+	}
+	return []string{p, defaultAdvertisedModelPrefix}
+}
+
+// StripModelPrefix removes the plugin's advertised model prefix; bare or
+// foreign ids pass through untouched.
+func StripModelPrefix(model string) string {
+	m := strings.TrimSpace(model)
+	for _, p := range modelPrefixCandidates() {
+		if strings.HasPrefix(m, p) {
+			return strings.TrimPrefix(m, p)
+		}
+	}
+	return m
 }
 
 // commonParams builds the common_params JSON string for chat_sessions.

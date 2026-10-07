@@ -1,0 +1,1 @@
+{"bump": "minor", "note": "注册的模型 ID 统一加 qoder/ 前缀（如 qoder/qmodel、qoder/kmodel_latest），与 kiro 的 kiro/xxx 形式对齐：模型在 CPA 模型页明确归到 qoder 分组，也不再与其他插件/原生 provider 的同名 ID 冲突。新增 model_prefix（默认 qoder/）与 enable_model_prefix（默认开）配置开关；关闭后回到裸 ID。执行器剥离改为只剥本插件自己的前缀 stripModelPrefix（旧实现按第一个 / 切分，会把上游合法带斜杠的 key 也切坏，且把任意外来前缀当成自己的）。模型排除选择器按前缀后的 ID 上屏，落盘快照保持裸 ID，无需手工迁移。"}

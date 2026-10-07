@@ -1256,22 +1256,41 @@ func cacheModelAliases(host pluginapi.HostConfigSummary) {
 
 // resolveUpstreamModel maps an aliased requested model back to the real
 // upstream model ID. Returns the input unchanged when nothing matches.
+//
+// v0.13.0: the id the host dispatches carries the plugin model prefix
+// ("workbuddy/glm-5.2") because the host has no mechanism to strip it. Both
+// the alias tables and the upstream itself key on the BARE id, so the prefixed
+// form is looked up first (an operator alias may legitimately be written
+// prefixed) and the stripped form second; when neither matches, the bare form
+// is what goes upstream.
 func resolveUpstreamModel(model string, attributes map[string]string) string {
 	m := strings.TrimSpace(model)
 	if m == "" {
 		return model
 	}
-	key := strings.ToLower(m)
-	if name, ok := parseModelAliasAttribute(attributes)[key]; ok {
+	if name, ok := lookupModelAlias(m, attributes); ok {
 		return name
+	}
+	if bare := stripModelPrefix(m); bare != m {
+		if name, ok := lookupModelAlias(bare, attributes); ok {
+			return name
+		}
+		return bare
+	}
+	return m
+}
+
+// lookupModelAlias resolves one exact model spelling through the per-auth
+// alias attribute first, then the host oauth-model-alias cache.
+func lookupModelAlias(model string, attributes map[string]string) (string, bool) {
+	key := strings.ToLower(strings.TrimSpace(model))
+	if name, ok := parseModelAliasAttribute(attributes)[key]; ok {
+		return name, true
 	}
 	modelAliasCache.RLock()
 	name, ok := modelAliasCache.byAlias[key]
 	modelAliasCache.RUnlock()
-	if ok {
-		return name
-	}
-	return m
+	return name, ok
 }
 
 // parseModelAliasAttribute decodes a per-auth alias override from auth
@@ -1443,9 +1462,14 @@ func handleModelForAuth(raw []byte) ([]byte, error) {
 	// auth file carries a non-canonical provider string.
 	cacheModelAliases(req.Host)
 	models := fetchDynamicModelsFromStorage(req.StorageJSON)
-	// v0.9.39: filter at BOTH granularities — the provider key (whole
-	// plugin) and this credential's realm sub-key (channel-scoped).
+	// v0.13.0: advertise every id in the plugin's model namespace
+	// ("workbuddy/…"). The prefix is applied at the serve boundary — the
+	// discovery/merge/learned-alias machinery keeps working on bare upstream
+	// ids, and the persisted snapshot stays raw. addModelPrefix is idempotent.
+	// v0.9.39: exclusions re-apply at BOTH granularities — the provider key
+	// (whole plugin) and this credential's realm sub-key (channel-scoped) —
+	// AFTER the prefix, because exclusion patterns match the advertised id.
 	tok, _ := extractAccessToken(req.StorageJSON)
-	models = filterExcludedModelsForRealm(models, req.Host, realmForStorage(req.StorageJSON, tok))
+	models = filterExcludedModelsForRealm(prefixModelInfos(models), req.Host, realmForStorage(req.StorageJSON, tok))
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }

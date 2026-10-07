@@ -364,6 +364,8 @@ func wbRegistration() registration {
 				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "Multi-account selection: off (defer to built-in, default) or credits (pick highest remaining). WARNING: when off + lifecycle_auto=false, exhausted accounts may still be routed — enable lifecycle_auto or set scheduler_mode=credits."},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional override of CPAMP usage import URL (default http://cpa-manager-plus:18317/v0/management/usage/import; also env USAGE_REPORT_URL)."},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CPAMP admin key override. Prefer auto-detect from env CPAMP_ADMIN_KEY / USAGE_REPORT_KEY or secret file /run/secrets/cpamp_admin_key."},
+				{Name: "model_prefix", Type: pluginapi.ConfigFieldTypeString, Description: "Prefix applied to every registered model id (default qoder/). Keeps qoder's models in their own group on the CPA models page and prevents id collisions with another plugin or a native provider. A missing trailing slash is added."},
+				{Name: "enable_model_prefix", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Whether to add model_prefix to registered model ids (default true). Turn it off to advertise the bare upstream ids; the executor then forwards bare ids too."},
 			},
 		},
 		Capabilities: registrationCapability{
@@ -793,13 +795,16 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
 }
 
-// stripProviderPrefix removes the leading "qoder/" (or any "<provider>/")
-// segment from a CPA-facing model name, leaving the bare alias/key.
+// stripProviderPrefix removes the plugin's advertised model prefix from a
+// CPA-facing model name, leaving the bare alias/key the upstream recognises.
+//
+// v0.13.0: this delegates to stripModelPrefix, which removes exactly our own
+// configured/default prefix ("qoder/") instead of splitting on the first "/".
+// The generic split corrupted upstream keys that legitimately contain a slash
+// (e.g. a namespaced "vendor/model" id served by the same catalog) and, more
+// importantly, silently accepted ANY foreign prefix as our own.
 func stripProviderPrefix(model string) string {
-	if i := strings.Index(model, "/"); i > 0 {
-		return model[i+1:]
-	}
-	return model
+	return stripModelPrefix(model)
 }
 
 // executorStreamRequest wraps the host's executor.execute_stream RPC: the

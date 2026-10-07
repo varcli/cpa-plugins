@@ -47,12 +47,19 @@ plugins:
     qoder:
       enabled: true
 
-# 模型别名（可选）
+      # 注册到 CPA 的模型 ID 前缀（默认 "qoder/"，开关默认开）。
+      # 注册 ID 形如 qoder/<上游 id>，例如 qoder/qmodel_preview，
+      # 模型因此在 CPA 模型页归到 qoder 分组，也不会与其他插件/原生
+      # provider 的同名 ID 冲突。enable_model_prefix: false 可关闭。
+      model_prefix: "qoder/"
+      enable_model_prefix: true
+
+# 模型别名（可选）——按注册后的 ID 匹配，即带 qoder/ 前缀
 oauth-model-alias:
   qoder:
-    - name: qmodel_preview
+    - name: qoder/qmodel_preview
       alias: qoder/qwen3.8-max
-    - name: qmodel_latest
+    - name: qoder/qmodel_latest
       alias: qoder/qwen3.7-max
 ```
 
@@ -92,6 +99,15 @@ auth 文件字段（可共存）：
 
 ## 模型
 
-11 个静态模型（`qmodel_preview`、`qfmodel` 等）+ COSY 动态拉取。CPA 侧别名示例：`qoder/qwen3.8-max` → `qmodel_preview`。
+11 个静态模型（`qmodel_preview`、`qfmodel` 等）+ COSY 动态拉取。注册到 CPA 的
+ID 统一带 `qoder/` 前缀，例如 `qoder/qmodel_preview`、`qoder/qfmodel`——
+这让模型在 CPA 模型页归到 qoder 分组，也不会与其他插件/原生 provider 的同名
+ID 冲突，与 kiro 的 `kiro/xxx` 形式一致。前缀由 `model_prefix`（默认
+`qoder/`）控制，`enable_model_prefix: false` 可关闭并回到裸 ID。
+
+执行器转发上游前会剥掉自己的前缀（宿主只剥凭据的 `auth.Prefix`，不剥插件
+前缀）。CPA 侧别名按注册后的 ID 匹配，示例：`qoder/qwen3.8-max` →
+`qoder/qmodel_preview`。落盘快照、发现缓存与限流登账仍以裸 ID 为键，无需
+手工迁移。
 
 思考模式：2026-09-19 起对齐上游——所有请求统一 `is_reasoning: true` + `source: "system"`（不支持思考的模型上游自动忽略）；客户端可传 OpenAI 风格 `reasoning_effort`（`low`/`medium`/`xhigh`），非法值/缺省走上游默认（medium）。`Qwen3.8-Flash`（`qfmodel`）为官方限时免费模型（2026-10 前），动态发现与静态目录均已收录。

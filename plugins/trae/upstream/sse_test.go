@@ -323,19 +323,28 @@ func TestPrepareBodyToolCallWithoutNameDropped(t *testing.T) {
 }
 
 func TestSanitizeModelNameStripsNamespaceSuffix(t *testing.T) {
-	cases := []struct{ in, variant, want string }{
-		{"Doubao-Seed-2.1-Turbo-solo", "solo", "Doubao-Seed-2.1-Turbo"},
-		{"glm-5.2", "solo", "glm-5.2"},
-		{"glm-5.2", "cn", "glm-5.2"},
-		{"gpt-5.2-intl", "cn", "gpt-5.2"},
-		{"gpt-5.2-intl", "solo", "gpt-5.2"},
-		{"  kimi-k3  ", "solo", "kimi-k3"},
-		{"", "solo", ""},
-		{"x-solo-solo", "solo", "x-solo"}, // namespacing appends exactly one suffix
+	const p = "trae/" // the advertised model prefix (v0.13.0)
+	cases := []struct{ in, variant, prefix, want string }{
+		{"Doubao-Seed-2.1-Turbo-solo", "solo", p, "Doubao-Seed-2.1-Turbo"},
+		{"glm-5.2", "solo", p, "glm-5.2"},
+		{"glm-5.2", "cn", p, "glm-5.2"},
+		{"gpt-5.2-intl", "cn", p, "gpt-5.2"},
+		{"gpt-5.2-intl", "solo", p, "gpt-5.2"},
+		{"  kimi-k3  ", "solo", p, "kimi-k3"},
+		{"", "solo", p, ""},
+		{"x-solo-solo", "solo", p, "x-solo"}, // namespacing appends exactly one suffix
+		// v0.13.0: the registered id carries the advertised prefix and the host
+		// dispatches it verbatim — both prefix and suffix must come off.
+		{"trae/kimi-k2.6-solo", "solo", p, "kimi-k2.6"},
+		{"trae/claude-sonnet-4-intl", "intl", p, "claude-sonnet-4"},
+		{"trae/glm-5.2", "cn", p, "glm-5.2"},
+		{"trae/deepseek-ai/deepseek-v4-pro-solo", "solo", p, "deepseek-ai/deepseek-v4-pro"},
+		// enable_model_prefix=false advertises bare ids: nothing is stripped.
+		{"trae/glm-5.2", "cn", "", "trae/glm-5.2"},
 	}
 	for _, c := range cases {
-		if got := SanitizeModelName(c.in, c.variant); got != c.want {
-			t.Errorf("SanitizeModelName(%q,%q)=%q want %q", c.in, c.variant, got, c.want)
+		if got := SanitizeModelName(c.in, c.variant, c.prefix); got != c.want {
+			t.Errorf("SanitizeModelName(%q,%q,%q)=%q want %q", c.in, c.variant, c.prefix, got, c.want)
 		}
 	}
 }

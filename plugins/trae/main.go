@@ -495,6 +495,8 @@ func buildRegistration() registrationPayload {
 				{Name: "callback_port", Type: pluginapi.ConfigFieldTypeString, Description: "Fixed port for the OAuth callback listener (default: random per login). Docker: set e.g. 41890 with callback_bind=0.0.0.0 and publish -p 127.0.0.1:41890:41890 so the redirect completes automatically. If the browser runs on another machine and cannot reach the host's 127.0.0.1, or paste the failed address-bar URL into the paste box on <panel>/v0/resource/plugins/trae/panel (it replays it to the plugin's oauth_submit endpoint)."},
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily access-token refresh at 03:00 to prevent session expiry (default true)."},
 				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional model list. Each item can have id, name, alias, context, max_tokens, enabled."},
+				{Name: "model_prefix", Type: pluginapi.ConfigFieldTypeString, Description: "Prefix applied to every registered model id (default trae/). Keeps trae's models in their own group on the CPA models page and prevents id collisions with another plugin or a native provider. A missing trailing slash is added."},
+				{Name: "enable_model_prefix", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Whether to add model_prefix to registered model ids (default true). Turn it off to advertise the bare upstream ids (pre-0.13.0 behavior); the executor then forwards bare ids too."},
 			},
 		},
 		Capabilities: registrationCapability{
@@ -519,6 +521,12 @@ func buildRegistration() registrationPayload {
 // variant so the host can never route a chat request across credential
 // classes (v0.12.2). cn keeps plain IDs (back-compat with trae-cn users);
 // solo appends "-solo"; intl appends "-intl" (handled in intl_main.go).
+//
+// v0.13.0: the "<provider>/" model prefix (model_prefix.go) composes with
+// these suffixes — every advertised id is addModelPrefix(base + suffix), e.g.
+// "trae/claude-sonnet-4-intl" or "trae/kimi-k2.6-solo". The prefix is what
+// keeps a stray/legacy snapshot from another namespace out and groups the
+// models under trae; the suffix keeps the variants apart.
 const (
 	modelSuffixSolo = "-solo"
 	modelSuffixIntl = "-intl"
@@ -533,6 +541,37 @@ func suffixModels(in []pluginapi.ModelInfo, suffix string) []pluginapi.ModelInfo
 	for _, m := range in {
 		out = append(out, pluginapi.ModelInfo{ID: m.ID + suffix, Name: m.Name, OwnedBy: m.OwnedBy,
 			ContextLength: m.ContextLength, MaxCompletionTokens: m.MaxCompletionTokens})
+	}
+	return out
+}
+
+// prefixModelInfos applies the advertised model prefix to a whole catalog,
+// preserving every other field. Idempotent (see addModelPrefix), so it is safe
+// to run over catalogs that already came out of a prefixed builder.
+func prefixModelInfos(in []pluginapi.ModelInfo) []pluginapi.ModelInfo {
+	out := make([]pluginapi.ModelInfo, 0, len(in))
+	for _, m := range in {
+		m.ID = addModelPrefix(m.ID)
+		out = append(out, m)
+	}
+	return out
+}
+
+// variantModelID builds the ONE advertised id shape: "<prefix><base><suffix>".
+func variantModelID(base, suffix string) string {
+	return addModelPrefix(strings.TrimSpace(base) + suffix)
+}
+
+// unprefixModelInfos strips the plugin's advertised model prefix from a
+// persisted snapshot. Snapshots written by an older build carry bare ids, and
+// snapshots written with a different model_prefix carry that other prefix;
+// both must be normalized to the advertised namespace or the picker/exclusions
+// would key on ids the host never registered.
+func unprefixModelInfos(in []pluginapi.ModelInfo) []pluginapi.ModelInfo {
+	out := make([]pluginapi.ModelInfo, 0, len(in))
+	for _, m := range in {
+		m.ID = addModelPrefix(stripModelPrefix(m.ID))
+		out = append(out, m)
 	}
 	return out
 }
@@ -592,7 +631,7 @@ func handleModelForAuth(request []byte) ([]byte, error) {
 		// Variant unknown — advertise the cn ∪ solo static union.
 		return okEnvelope(pluginapi.ModelResponse{
 			Provider: providerName,
-			Models:   staticUnionModels(),
+			Models:   prefixModelInfos(staticUnionModels()),
 		})
 	}
 	// v0.12.62: exclusions at BOTH granularities — the provider key
@@ -635,9 +674,9 @@ func modelsForVariant(a *auth.Auth, storageJSON []byte) []pluginapi.ModelInfo {
 	if err != nil {
 		log.Printf("model.for_auth %s (%s): %v — persisted snapshot / static fallback", a.UID, a.Variant, err)
 		if snap, ok := persistedSnapshotForStorage(storageJSON, a.Variant); ok {
-			return snap
+			return unprefixModelInfos(snap)
 		}
-		return suffixModels(staticForVariant(a.Variant), suffix)
+		return prefixModelInfos(suffixModels(staticForVariant(a.Variant), suffix))
 	}
 	out := make([]pluginapi.ModelInfo, 0, len(dynamic))
 	seen := make(map[string]bool, len(dynamic))
@@ -652,17 +691,22 @@ func modelsForVariant(a *auth.Auth, storageJSON []byte) []pluginapi.ModelInfo {
 		}
 		seen[m.ID] = true
 		out = append(out, pluginapi.ModelInfo{
-			ID:                  m.ID + suffix,
+			ID:                  variantModelID(m.ID, suffix),
 			Name:                m.Name,
+			// v0.13.0: OwnedBy is what the host emits as the model's group on
+			// the CPA models page. Leaving it empty (the pre-0.13.0 dynamic
+			// path) landed every trae model in the "other" bucket — kiro and
+			// workbuddy always set it. Fixed here and in every other builder.
+			OwnedBy:             providerName,
 			ContextLength:       m.ContextWindow,
 			MaxCompletionTokens: m.MaxTokens,
 		})
 	}
 	if len(out) == 0 {
 		if snap, ok := persistedSnapshotForStorage(storageJSON, a.Variant); ok {
-			return snap
+			return unprefixModelInfos(snap)
 		}
-		return suffixModels(staticForVariant(a.Variant), suffix)
+		return prefixModelInfos(suffixModels(staticForVariant(a.Variant), suffix))
 	}
 	// v0.12.63: stamp the last-known-good catalog into the credential file
 	// (advertised ids, post-suffix, pre exclusion — exclusion re-applies on
@@ -704,7 +748,7 @@ func staticToModelInfos(known []staticModel) []pluginapi.ModelInfo {
 	out := make([]pluginapi.ModelInfo, 0, len(known))
 	for _, m := range known {
 		out = append(out, pluginapi.ModelInfo{
-			ID:            m.id,
+			ID:            addModelPrefix(m.id),
 			Name:          m.name,
 			ContextLength: m.ctx,
 			OwnedBy:       providerName,

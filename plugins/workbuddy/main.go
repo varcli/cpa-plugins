@@ -360,6 +360,8 @@ func wbRegistration() registration {
 				{Name: "stream_head_timeout", Type: pluginapi.ConfigFieldTypeInteger, Description: "Opt-in async-stream head gate, in seconds (default 0 = disabled, unchanged behavior). When > 0 the executor waits up to this long for the first decisive upstream event before opening the host stream, so a pre-answer failure (upstream >=400 or an error frame before the model starts answering) returns as a normal failed request with an HTTP status instead of a lossy in-band text error. Never blocks longer than this, and a silent stream is released normally."},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional override of CPAMP usage import URL (default http://cpa-manager-plus:18317/v0/management/usage/import; also env USAGE_REPORT_URL)."},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CPAMP admin key override. Prefer auto-detect from env CPAMP_ADMIN_KEY / USAGE_REPORT_KEY or secret file /run/secrets/cpamp_admin_key."},
+				{Name: "model_prefix", Type: pluginapi.ConfigFieldTypeString, Description: "Prefix applied to every registered model id (default workbuddy/). Keeps workbuddy's models in their own group on the CPA models page and prevents id collisions with another plugin or a native provider. A missing trailing slash is added."},
+				{Name: "enable_model_prefix", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Whether to add model_prefix to registered model ids (default true). Turn it off to advertise the bare upstream ids; the executor then forwards bare ids too."},
 			},
 		},
 		Capabilities: registrationCapability{

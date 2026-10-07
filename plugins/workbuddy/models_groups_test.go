@@ -70,7 +70,7 @@ func TestModelGroupsSnapshotAggregation(t *testing.T) {
 	if gCN.Count != 2 || len(gCN.Models) != 2 {
 		t.Fatalf("cn group = %d models, want 2 (newest snapshot wins)", gCN.Count)
 	}
-	if gCN.Models[0].ID != "m-cn-a" || gCN.Models[1].ID != "m-cn-b" {
+	if gCN.Models[0].ID != "workbuddy/m-cn-a" || gCN.Models[1].ID != "workbuddy/m-cn-b" {
 		t.Fatalf("cn models = %v,%v — stale snapshot leaked", gCN.Models[0].ID, gCN.Models[1].ID)
 	}
 	if gCN.Source != "snapshot" || gCN.FetchedAt != "2026-09-27T00:00:00Z" {
@@ -84,7 +84,7 @@ func TestModelGroupsSnapshotAggregation(t *testing.T) {
 	}
 
 	gGL := groups["global"]
-	if gGL.Count != 1 || gGL.Models[0].ID != "m-gl-1" {
+	if gGL.Count != 1 || gGL.Models[0].ID != "workbuddy/m-gl-1" {
 		t.Fatalf("global group wrong: %+v", gGL.Models)
 	}
 
@@ -127,7 +127,7 @@ func TestModelGroupsRefresh(t *testing.T) {
 		t.Fatalf("status = %d", status)
 	}
 	cnGroup := groupsByRealm(t, payload)["cn"]
-	if cnGroup.Source != "refreshed" || cnGroup.Count != 3 || cnGroup.Models[0].ID != "m-fresh-1" {
+	if cnGroup.Source != "refreshed" || cnGroup.Count != 3 || cnGroup.Models[0].ID != "workbuddy/m-fresh-1" {
 		t.Fatalf("refresh group = source %q count %d — fresh discovery should win", cnGroup.Source, cnGroup.Count)
 	}
 	if cnGroup.FetchedAt == "" || strings.HasPrefix(cnGroup.FetchedAt, "2026-09-01") {
@@ -148,7 +148,7 @@ func TestModelGroupsRefresh(t *testing.T) {
 		t.Fatalf("status = %d", status)
 	}
 	cnGroup = groupsByRealm(t, payload)["cn"]
-	if cnGroup.Count != 3 || cnGroup.Models[0].ID != "m-fresh-1" {
+	if cnGroup.Count != 3 || cnGroup.Models[0].ID != "workbuddy/m-fresh-1" {
 		t.Fatalf("refresh fallback should serve the freshly re-stamped snapshot, got %+v", cnGroup.Models)
 	}
 }

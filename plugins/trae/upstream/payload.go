@@ -4,6 +4,7 @@ package upstream
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 )
 
 // PrepareBody 单 pass 改写；无法解析时原样返回。
@@ -166,13 +167,19 @@ func PrepareBodyResolved(src []byte, variant, resolvedModel string) []byte {
 	}
 
 	model, _ := obj["model"].(string)
+	// v0.13.0: the plugin prefix is stripped LAST-configured-aware — it is
+	// accepted on BOTH the body name (a raw client can send "trae/glm-5.2")
+	// and the host-resolved name (the host hands the executor the registered
+	// id verbatim, prefix included). Only SanitizeModelName's model_prefix
+	// covers it; the mismatch note below stays scoped to credential prefixes.
+	prefix := ModelPrefix()
 	if r := strings.TrimSpace(resolvedModel); r != "" {
-		if SanitizeModelName(model, variant) != SanitizeModelName(r, variant) {
+		if SanitizeModelName(model, variant, prefix) != SanitizeModelName(r, variant, prefix) {
 			NoteHostPrefixMismatch(model, r, variant)
 		}
 		model = r
 	}
-	model = SanitizeModelName(model, variant)
+	model = SanitizeModelName(model, variant, prefix)
 	if model == "" {
 		model = DefaultConfigName
 	}
@@ -254,8 +261,17 @@ func PrepareBodyResolved(src []byte, variant, resolvedModel string) []byte {
 // Only ONE suffix occurrence is stripped (our namespacing appends exactly
 // one), so a genuine upstream model ending in "-solo" still round-trips
 // (advertised "x-solo-solo" → upstream "x-solo").
-func SanitizeModelName(model, variant string) string {
+//
+// v0.13.0: prefix is the plugin's advertised model_prefix ("trae/"). The host
+// has no mechanism to strip a plugin prefix, so the id it dispatches carries
+// it and the upstream catalog rejects it — stripping it here is the mirror of
+// main.go's addModelPrefix. Callers pass ModelPrefix(); an empty prefix (the
+// enable_model_prefix=false toggle) skips the strip entirely.
+func SanitizeModelName(model, variant, prefix string) string {
 	m := strings.TrimSpace(model)
+	if p := strings.TrimSpace(prefix); p != "" {
+		m = strings.TrimPrefix(m, p)
+	}
 	if variant == "solo" {
 		m = strings.TrimSuffix(m, "-solo")
 	}
@@ -265,6 +281,59 @@ func SanitizeModelName(model, variant string) string {
 
 // DefaultConfigName 默认模型（glm-5.2，实测可用）。
 const DefaultConfigName = "glm-5.2"
+
+// defaultAdvertisedModelPrefix mirrors main.go's built-in model prefix. The
+// upstream package must not import main, so the two constants are kept in sync
+// by the model_prefix tests.
+const defaultAdvertisedModelPrefix = "trae/"
+
+var (
+	advertisedModelPrefixMu sync.RWMutex
+	advertisedModelPrefix   = defaultAdvertisedModelPrefix
+)
+
+// SetModelPrefix wires the plugin's effective advertised model prefix into the
+// request rewriter. Called from main.go's setModelPrefixConfig on every
+// register/reconfigure. An empty string disables prefix stripping (the
+// enable_model_prefix=false toggle advertises bare ids, so nothing to strip).
+func SetModelPrefix(prefix string) {
+	advertisedModelPrefixMu.Lock()
+	advertisedModelPrefix = strings.TrimSpace(prefix)
+	advertisedModelPrefixMu.Unlock()
+}
+
+// ModelPrefix returns the prefix the advertised ids currently carry ("" when
+// the toggle is off).
+func ModelPrefix() string {
+	advertisedModelPrefixMu.RLock()
+	defer advertisedModelPrefixMu.RUnlock()
+	return advertisedModelPrefix
+}
+
+// modelPrefixCandidates returns the prefixes a request id may carry, longest
+// first (so a shorter prefix never truncates a longer one).
+func modelPrefixCandidates() []string {
+	primary := ModelPrefix()
+	if primary == "" {
+		return nil
+	}
+	if primary == defaultAdvertisedModelPrefix {
+		return []string{primary}
+	}
+	return []string{primary, defaultAdvertisedModelPrefix}
+}
+
+// StripModelPrefix removes the plugin's advertised model prefix from an id
+// before it is forwarded upstream. Foreign or bare ids pass through untouched.
+func StripModelPrefix(model string) string {
+	m := strings.TrimSpace(model)
+	for _, p := range modelPrefixCandidates() {
+		if strings.HasPrefix(m, p) {
+			return strings.TrimPrefix(m, p)
+		}
+	}
+	return m
+}
 
 // normalizeToolChoice 按上游 Go struct（string 类型）改写 OpenAI tool_choice。
 //   - "none" / {"type":"none"} → 删 tool_choice + 删 tools/functions

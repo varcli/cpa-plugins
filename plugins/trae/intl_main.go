@@ -273,7 +273,7 @@ func intlmodelCatalogForAuth(storageJSON []byte, authID string, a *upstream.Auth
 	if err != nil {
 		log.Printf("model.for_auth %s: %v — persisted snapshot / static fallback", a.UID, err)
 		if snap, ok := persistedSnapshotForStorage(storageJSON, variantIntl); ok {
-			return snap
+			return unprefixModelInfos(snap)
 		}
 		return intlstaticModels()
 	}
@@ -285,17 +285,18 @@ func intlmodelCatalogForAuth(storageJSON []byte, authID string, a *upstream.Auth
 		if id == "" || id == "auto" || id == "work" {
 			continue
 		}
-		nid := id + "-intl"
+		nid := variantModelID(id, modelSuffixIntl)
 		if seen[nid] {
 			continue
 		}
 		seen[nid] = true
 		out = append(out, pluginapi.ModelInfo{ID: nid, Name: nid, OwnedBy: intlproviderName})
 	}
-	// Always include "auto" and "work" as virtual models.
+	// Always include "auto" and "work" as virtual models. v0.13.0: they carry
+	// the advertised prefix too (trae/auto, trae/work) like every other id.
 	out = append(out,
-		pluginapi.ModelInfo{ID: "auto", Name: "auto (server pick)"},
-		pluginapi.ModelInfo{ID: "work", Name: "work (fast mode)"},
+		pluginapi.ModelInfo{ID: variantModelID("auto", ""), Name: "auto (server pick)", OwnedBy: intlproviderName},
+		pluginapi.ModelInfo{ID: variantModelID("work", ""), Name: "work (fast mode)", OwnedBy: intlproviderName},
 	)
 	// v0.12.63: stamp the last-known-good catalog into the credential file
 	// (advertised ids, pre exclusion — exclusion re-applies on every serve
@@ -308,10 +309,13 @@ func intlstaticModels() []pluginapi.ModelInfo {
 	// "-intl" suffix namespaces Intl models so host routing can never send
 	// a CN/SOLO-model request to an Intl credential (or vice versa).
 	// "auto"/"work" are Intl-exclusive virtual names and stay unsuffixed.
+	// v0.13.0: ids below are bare bases; addModelPrefix supplies the
+	// advertised "trae/" namespace so the static fallback and the dynamic
+	// path register identical ids.
 	known := []string{"auto", "work", "gpt-5.2-intl", "gemini-3.1-pro-intl", "kimi-k2.5-intl", "claude-sonnet-4-5-intl"}
 	out := make([]pluginapi.ModelInfo, 0, len(known))
 	for _, id := range known {
-		out = append(out, pluginapi.ModelInfo{ID: id, Name: id, OwnedBy: intlproviderName})
+		out = append(out, pluginapi.ModelInfo{ID: addModelPrefix(id), Name: id, OwnedBy: intlproviderName})
 	}
 	return out
 }

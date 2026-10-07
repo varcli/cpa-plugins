@@ -61,6 +61,35 @@ func TestPrepareBodyResolvedEmptyFallsBackToBody(t *testing.T) {
 	}
 }
 
+// v0.13.0: the registered id the host dispatches carries the plugin model
+// prefix ("trae/kimi-k2.6-solo"); both prefix and variant suffix must be gone
+// from config_name/model before the upstream call.
+func TestPrepareBodyResolvedStripsAdvertisedModelPrefix(t *testing.T) {
+	SetModelPrefix("trae/")
+	defer SetModelPrefix("trae/")
+	out := PrepareBodyResolved(
+		[]byte(`{"model":"trae/kimi-k2.6-solo","messages":[{"role":"user","content":"hi"}]}`),
+		"solo", "trae/kimi-k2.6-solo")
+	cn, m := preparedModelFields(t, out)
+	if cn != "kimi-k2.6" || m != "kimi-k2.6" {
+		t.Fatalf("config_name=%q model=%q, want bare kimi-k2.6", cn, m)
+	}
+}
+
+// The toggle off (enable_model_prefix=false) advertises bare ids and must not
+// strip anything that merely looks like a namespace segment.
+func TestPrepareBodyResolvedPrefixedButToggleOff(t *testing.T) {
+	SetModelPrefix("")
+	defer SetModelPrefix("trae/")
+	out := PrepareBodyResolved(
+		[]byte(`{"model":"trae/glm-5.2","messages":[{"role":"user","content":"hi"}]}`),
+		"cn", "trae/glm-5.2")
+	cn, _ := preparedModelFields(t, out)
+	if cn != "trae/glm-5.2" {
+		t.Fatalf("config_name=%q, want the id untouched while the prefix is off", cn)
+	}
+}
+
 func TestPrepareBodyResolvedWinsWhenBodyHasNoModel(t *testing.T) {
 	out := PrepareBodyResolved(
 		[]byte(`{"messages":[{"role":"user","content":"hi"}]}`),

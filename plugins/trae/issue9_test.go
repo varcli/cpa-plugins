@@ -84,9 +84,11 @@ func TestStaticFallbackCatalogMatchesChatLane(t *testing.T) {
 			t.Errorf("dead model %q back in static fallback (%v)", d, all[d])
 		}
 	}
-	live := []string{"glm-5.2", "glm-5.3", "kimi-k2.6", "kimi-k2.7-code", "minimax-m3",
-		"Doubao-Seed-2.1-Pro", "qwen-3.7-plus", "qwen3.8-max",
-		"DeepSeek-V4-Flash-Official", "DeepSeek-V4-Pro-Official"}
+	// v0.13.0: advertised ids carry the plugin model prefix ("trae/…"), so the
+	// catalog membership check keys on the registered form the host sees.
+	live := []string{"trae/glm-5.2", "trae/glm-5.3", "trae/kimi-k2.6", "trae/kimi-k2.7-code", "trae/minimax-m3",
+		"trae/Doubao-Seed-2.1-Pro", "trae/qwen-3.7-plus", "trae/qwen3.8-max",
+		"trae/DeepSeek-V4-Flash-Official", "trae/DeepSeek-V4-Pro-Official"}
 	for _, l := range live {
 		if _, ok := all[l]; !ok {
 			t.Errorf("live model %q missing from static fallback", l)

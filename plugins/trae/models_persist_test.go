@@ -91,7 +91,7 @@ func TestPersistedSnapshotServedOnDiscoveryFailure(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	got := modelsForVariant(a, persistTestStorage("tok-cn", "cn", ""))
-	if len(got) != 2 || got[0].ID != "m-cn-1" || got[1].ID != "m-cn-2" {
+	if len(got) != 2 || got[0].ID != "trae/m-cn-1" || got[1].ID != "trae/m-cn-2" {
 		t.Fatalf("snapshot not served on discovery failure: %+v", got)
 	}
 }
@@ -115,14 +115,14 @@ func TestPersistedSnapshotSameVariantOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse cn: %v", err)
 	}
-	if got := modelsForVariant(aCN, persistTestStorage("tok-ask-cn", "cn", "")); len(got) != 1 || got[0].ID != "m-cn-peer" {
+	if got := modelsForVariant(aCN, persistTestStorage("tok-ask-cn", "cn", "")); len(got) != 1 || got[0].ID != "trae/m-cn-peer" {
 		t.Fatalf("cn ask: want cn peer snapshot, got %+v", got)
 	}
 	aSolo, err := parseStoredAuth(persistTestStorage("tok-ask-solo", "solo", ""))
 	if err != nil {
 		t.Fatalf("parse solo: %v", err)
 	}
-	if got := modelsForVariant(aSolo, persistTestStorage("tok-ask-solo", "solo", "")); len(got) != 1 || got[0].ID != "m-solo-peer-solo" {
+	if got := modelsForVariant(aSolo, persistTestStorage("tok-ask-solo", "solo", "")); len(got) != 1 || got[0].ID != "trae/m-solo-peer-solo" {
 		t.Fatalf("solo ask: want solo peer snapshot, got %+v", got)
 	}
 }
@@ -260,10 +260,10 @@ func TestModelGroupsSnapshotAggregation(t *testing.T) {
 	if gCN.Count != 2 || gCN.Source != "snapshot" || gCN.Credentials != 1 {
 		t.Fatalf("cn group = source %q count %d creds %d", gCN.Source, gCN.Count, gCN.Credentials)
 	}
-	if gCN.Models[0].ID != "m-cn-a" {
+	if gCN.Models[0].ID != "trae/m-cn-a" {
 		t.Fatalf("cn model = %q", gCN.Models[0].ID)
 	}
-	if groups["solo"].Count != 1 || groups["solo"].Models[0].ID != "m-solo-1-solo" {
+	if groups["solo"].Count != 1 || groups["solo"].Models[0].ID != "trae/m-solo-1-solo" {
 		t.Fatalf("solo group wrong: %+v", groups["solo"].Models)
 	}
 	if groups["intl"].Count != 2 {
@@ -298,7 +298,7 @@ func TestModelGroupsRefresh(t *testing.T) {
 		t.Fatalf("status = %d", status)
 	}
 	cnGroup := groupsByVariant(t, payload)["cn"]
-	if cnGroup.Source != "refreshed" || cnGroup.Count != 2 || cnGroup.Models[0].ID != "m-fresh-1" {
+	if cnGroup.Source != "refreshed" || cnGroup.Count != 2 || cnGroup.Models[0].ID != "trae/m-fresh-1" {
 		t.Fatalf("refresh group = source %q count %d — fresh discovery should win", cnGroup.Source, cnGroup.Count)
 	}
 
@@ -314,7 +314,7 @@ func TestModelGroupsRefresh(t *testing.T) {
 		t.Fatalf("status = %d", status)
 	}
 	cnGroup = groupsByVariant(t, payload)["cn"]
-	if cnGroup.Count != 2 || cnGroup.Models[0].ID != "m-fresh-1" {
+	if cnGroup.Count != 2 || cnGroup.Models[0].ID != "trae/m-fresh-1" {
 		t.Fatalf("refresh fallback should serve the freshly re-stamped snapshot, got %+v", cnGroup.Models)
 	}
 }

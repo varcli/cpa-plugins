@@ -52,6 +52,8 @@ CGO_ENABLED=1 go build -buildmode=c-shared -o trae.so .
 | `callback_port` | string | OAuth 回调固定端口（默认每次随机）。浏览器无法访问宿主 `127.0.0.1` 时，可把地址栏里失败的 URL 粘贴到面板 `<panel>/v0/resource/plugins/trae/panel` 的粘贴框 |
 | `token_keepalive` | bool | 每日 03:00 刷新 access token（默认 true） |
 | `models` | array | 可选模型列表，每项可含 id、name、alias、context、max_tokens、enabled |
+| `model_prefix` | string | 注册到 CPA 的模型 ID 前缀（默认 `trae/`）。模型因此在 CPA 模型页归到 trae 分组，也不会与其他插件撞名。缺尾斜杠会自动补 |
+| `enable_model_prefix` | bool | 是否给注册的模型 ID 加 `model_prefix`（默认 true）。关闭后回到裸 ID（与 0.12.x 行为一致） |
 
 ## 使用
 
@@ -96,7 +98,19 @@ CPA 自带的「新增账号」入口（v8：`/v8/management/oauth/auth-url?prov
 
 ## 模型
 
-模型 id 按变体加后缀命名空间，避免跨凭据路由：`cn` 与 `solo` 共享同一份 `solo_work_lite` 目录，Intl 使用自己的目录。注册时统一带 `trae/` 前缀，宿主侧 `oauth-model-alias` / `oauth-excluded-models` 配置照常生效。
+模型 id 统一带 `trae/` 前缀，并按变体加后缀命名空间，两层叠加：
+
+| 变体 | 注册 ID 示例 |
+|---|---|
+| cn | `trae/glm-5.2` |
+| solo | `trae/glm-5.2-solo` |
+| intl | `trae/claude-sonnet-4-intl`、虚拟 `trae/auto`、`trae/work` |
+
+前缀让模型在 CPA 模型页归到 trae 分组（此前动态发现的条目缺 `OwnedBy`，全部落进 `other`），后缀则保证同一上游模型名在 cn/solo/intl 三个凭据类之间不会互相路由。`cn` 与 `solo` 共享同一份 `solo_work_lite` 目录，Intl 使用自己的目录。
+
+前缀由 `model_prefix` 控制（默认 `trae/`），`enable_model_prefix: false` 可关掉。宿主侧 `oauth-model-alias` / `oauth-excluded-models` 配置照常生效——排除项按**注册后的 ID**（含前缀与后缀）匹配。
+
+执行器在转发上游前会剥掉自己的前缀（宿主只剥凭据的 `auth.Prefix`，不剥插件前缀）：CN/SOLO 走 `upstream.SanitizeModelName`，Intl 走 `intlupstream.resolveMode`。历史 `model_cache` 快照（裸 ID）与面板排除选择器在读取时会自动对齐到当前前缀，无需手工迁移。
 
 ## 开发
 

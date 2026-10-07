@@ -119,6 +119,9 @@ func configure(raw []byte) {
 	nextLoginPlatform := ""    // sticky: empty = keep current (issue #24)
 	nextLoginRegion := ""      // sticky: empty = keep current (issue #24)
 	nextStreamHeadTimeout := 0 // default off: 0 seconds
+	// v0.13.0: not sticky — an absent key means the default (workbuddy/ + on).
+	nextModelPrefix := defaultModelPrefix
+	nextModelPrefixEnabled := true
 
 	nextPinned := map[string][]string{}
 	cfgURL, cfgKey := "", ""
@@ -168,6 +171,14 @@ func configure(raw []byte) {
 				}
 				if v, present := m["management_key"]; present {
 					nextMgmtKey = configScalarString(v)
+				}
+				if v, present := m["model_prefix"]; present {
+					if p := strings.TrimSpace(configScalarString(v)); p != "" {
+						nextModelPrefix = p
+					}
+				}
+				if v, present := m["enable_model_prefix"]; present {
+					nextModelPrefixEnabled = configScalarBool(v)
 				}
 				if v, present := m["stream_head_timeout"]; present {
 					if n, err := strconv.Atoi(configScalarString(v)); err == nil && n > 0 {
@@ -237,6 +248,17 @@ func configure(raw []byte) {
 						nextStreamHeadTimeout = n
 					}
 				}
+				if strings.HasPrefix(line, "model_prefix:") {
+					v := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "model_prefix:")), "\"'")
+					if v != "" {
+						nextModelPrefix = v
+					}
+				}
+				if strings.HasPrefix(line, "enable_model_prefix:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "enable_model_prefix:"))
+					v = strings.Trim(v, "\"'")
+					nextModelPrefixEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
 				if strings.HasPrefix(line, "models_cn:") {
 					if ids := parsePinnedModelList(strings.TrimPrefix(line, "models_cn:")); len(ids) > 0 {
 						nextPinned["cn"] = ids
@@ -255,6 +277,11 @@ func configure(raw []byte) {
 			}
 		}
 	}
+
+	// v0.13.0: the advertised model namespace follows the current config on
+	// every register/reconfigure (non-sticky). Applied before the model serve
+	// paths can observe it.
+	setModelPrefixConfig(nextModelPrefix, nextModelPrefixEnabled)
 
 	// Apply each setting under its own lock — no nesting.
 	checkinAutoMu.Lock()

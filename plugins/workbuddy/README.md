@@ -134,6 +134,16 @@ plugins:
       usage_report_url: "http://cpa-manager-plus:18317/v0/management/usage/import"
       usage_report_key: ""
 
+      # Advertised model-id namespace (default "workbuddy/", toggle default true).
+      # Registered ids become workbuddy/<upstream-id>, e.g. workbuddy/glm-5.2,
+      # so CPA groups them under "workbuddy" instead of mixing with other
+      # providers' identically-named models. The executor strips this prefix
+      # before calling upstream (the host only strips a credential's own
+      # auth.Prefix, never a plugin prefix). Set enable_model_prefix: false to
+      # go back to bare ids.
+      model_prefix: "workbuddy/"
+      enable_model_prefix: true
+
       # Plugin-layer management auth. When set, all mutating endpoints under
       # /v0/management/plugins/workbuddy/* require this Bearer token.
       # When empty (default) the host's management middleware is the only
@@ -153,7 +163,23 @@ plugins:
 
 Model aliases and exclusions are handled natively by CPA's
 `oauth-model-alias` and `oauth-excluded-models` config — no plugin-side
-duplication needed.
+duplication needed. Both match on the **advertised** id, i.e. the one with the
+`workbuddy/` prefix (e.g. `workbuddy/glm-5.2`).
+
+### Model ids
+
+Every model this plugin advertises carries a literal `workbuddy/` prefix:
+
+| Upstream id | Advertised id |
+|---|---|
+| `glm-5.2` | `workbuddy/glm-5.2` |
+| `deepseek-v4.1` | `workbuddy/deepseek-v4.1` |
+
+The prefix is what puts the models in CPA's `workbuddy` group on the models
+page. It is applied at the serve boundary — `model.for_auth`, the model
+exclusion picker, `model.groups` — while discovery caches, persisted snapshots
+and rate-limit bookkeeping all keep keying on the bare upstream id, so existing
+on-disk state needs no migration.
 
 ## Lifecycle
 
