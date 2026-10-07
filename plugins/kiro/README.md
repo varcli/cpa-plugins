@@ -88,7 +88,7 @@ cpa --kiro-import /path/to/credentials --kiro-import-mode reference
 
 | 路由 | 说明 |
 |---|---|
-| `GET /quota` | 列出 Kiro 账号的用量与剩余额度 |
+| `GET /usage` | 列出 Kiro 账号的用量与剩余额度（面板数据源） |
 | `POST /quotaRequest` | 重新向上游查询配额（不发送模型请求） |
 | `GET /credentials` | 列出 CPA 凭据记录与插件内存中的请求统计 |
 | `POST /oauth/login/start` | 从面板开始一次 Kiro OAuth 登录 |
@@ -98,6 +98,15 @@ cpa --kiro-import /path/to/credentials --kiro-import-mode reference
 | `GET /oauth/relogin/status` | 轮询凭据替换登录 |
 | `POST /oauth/relogin/status` | 提交浏览器回调 URL（`callback_url`）完成重新登录 |
 | `POST /oauth/callback` | 接收 Kiro 浏览器回调，组织账号继续走 AWS SSO OIDC |
+
+> **不要用 `/quota` 作为插件路由名。** 宿主自己注册了
+> `GET|POST|DELETE /v0/management/plugins/:id/quota`（凭据配额特性）。gin 的静态
+> 路由先于插件的 `NoRoute` 兜底匹配，所以 `GET /plugins/kiro/quota` 会落到宿主
+> handler 上，返回 `400 auth_index is required` —— 插件侧的同名 handler 永远不执行。
+> 宿主的保留路由守卫也拦不住：它按字面路径比较，`/plugins/:id/quota` ≠
+> `/plugins/kiro/quota`，因此既没有告警也不会跳过。同理，宿主在
+> `/plugins/:id/` 下占用的任何后缀（`quota`、`config`、`enabled`）插件都不能用。
+> Kiro 的列表接口因此叫 `GET /usage`。
 
 ### 面板
 

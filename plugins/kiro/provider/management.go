@@ -45,7 +45,16 @@ func registerManagement() ([]byte, error) {
 	base := "/plugins/" + providerName
 	return okEnvelope(managementRegistrationResponse{
 		Routes: []managementRoute{
-			{Method: http.MethodGet, Path: base + "/quota", Description: "Returns sanitized Kiro quota and usage-limit data."},
+			// NOT "/quota": the host registers its own gin routes
+			// GET|POST|DELETE /v0/management/plugins/:id/quota for the
+			// credential-quota feature. Gin resolves those before NoRoute, so
+			// the plugin handler never runs and the browser gets the host's
+			// 400 "auth_index is required". The host's reserved-route guard
+			// does not catch it either — that compares literal paths, and
+			// "/plugins/:id/quota" != "/plugins/kiro/quota". Any suffix the
+			// host uses under /plugins/:id/ (quota, config, enabled) is
+			// therefore unusable by a plugin.
+			{Method: http.MethodGet, Path: base + "/usage", Description: "Returns sanitized Kiro quota and usage-limit data."},
 			{Method: http.MethodPost, Path: base + "/quotaRequest", Description: "Refreshes Kiro quota without sending model requests."},
 			{Method: http.MethodGet, Path: base + "/credentials", Description: "Returns sanitized CPA credential records and request statistics."},
 			{Method: http.MethodPost, Path: base + "/oauth/relogin/start", Description: "Starts Kiro OAuth again and replaces an existing Kiro credential."},
@@ -99,7 +108,10 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return handleBrowserCallbackManagement(req)
 	case req.Method == http.MethodGet && path == base+"/credentials":
 		return handleCredentialRecords()
-	case path == base+"/quota" || path == base+"/quotaRequest":
+	case path == base+"/usage" || path == base+"/quota" || path == base+"/quotaRequest":
+		// "/quota" is kept in the dispatch table for older callers only — it
+		// is unreachable through CPA because the host's own route wins first
+		// (see registerManagement). The panel uses "/usage".
 		refreshRequest := path == base+"/quotaRequest"
 		if !strings.EqualFold(req.Method, http.MethodGet) && !(refreshRequest && strings.EqualFold(req.Method, http.MethodPost)) {
 			return okEnvelope(managementResponse{StatusCode: http.StatusMethodNotAllowed, Headers: jsonHeaders(), Body: mustJSON(map[string]any{"error": "method_not_allowed"})})

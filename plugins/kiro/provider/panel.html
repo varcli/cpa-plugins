@@ -291,7 +291,9 @@ let loginMode="login";
 async function load(force, btn){
   if(btn)busy(btn,true);
   try{
-    const data=await api("/quota"+(force?"?refresh=1":""));
+    /* "/usage", not "/quota": the host owns /plugins/:id/quota (gin route
+       beats NoRoute), so that path returns the host's 400 by design. */
+    const data=await api("/usage"+(force?"?refresh=1":""));
     accountCache=(data&&data.accounts)||[];
     render(data);
   }catch(e){
