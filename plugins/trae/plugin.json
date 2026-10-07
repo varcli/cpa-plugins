@@ -8,23 +8,23 @@
       {
         "goarch": "arm64",
         "goos": "darwin",
-        "sha256": "c19cb8ede511d951172df10dbeb2b577641b628902133397efcaf7a4d10a0dfc",
-        "size": 3065922,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.5.2/trae_0.5.2_darwin_arm64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.6.0/trae_0.6.0_darwin_arm64.zip"
       },
       {
         "goarch": "amd64",
         "goos": "linux",
-        "sha256": "78148c8409aa0dc24c4e8da0b2c255638b1923c6a25ef1feca2bfc12aecc9423",
-        "size": 5969086,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.5.2/trae_0.5.2_linux_amd64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.6.0/trae_0.6.0_linux_amd64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "linux",
-        "sha256": "5545e89fd476bd4a8f8305a27ed5c786d1b3e5e9e87b51a5716a3d40ffac2370",
-        "size": 5408058,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.5.2/trae_0.5.2_linux_arm64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.6.0/trae_0.6.0_linux_arm64.zip"
       }
     ],
     "type": "direct"
@@ -39,5 +39,5 @@
     "traework",
     "checkin"
   ],
-  "version": "0.5.2"
+  "version": "0.6.0"
 }
