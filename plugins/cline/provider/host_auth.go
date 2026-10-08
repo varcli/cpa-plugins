@@ -61,8 +61,9 @@ func hostAuthListFiles() ([]hostAuthFileEntry, error) {
 
 // hostAuthGetByIndex reads one credential document by host auth index.
 func hostAuthGetByIndex(authIndex string) ([]byte, error) {
-	body, _ := json.Marshal(map[string]string{"auth_index": authIndex})
-	raw, err := callHostCall(pluginabi.MethodHostAuthGet, body)
+	// 传结构化 payload: callHost 内部会 json.Marshal 一次, 传 []byte 会被编码成
+	// base64 字符串, 宿主收到的是字符串而非对象 (unmarshal 失败)。
+	raw, err := callHostCall(pluginabi.MethodHostAuthGet, map[string]any{"auth_index": authIndex})
 	if err != nil {
 		return nil, err
 	}
@@ -76,8 +77,10 @@ func hostAuthSaveJSON(name string, raw []byte) error {
 	if name == "" {
 		return fmt.Errorf("empty auth file name")
 	}
-	body, _ := json.Marshal(pluginapi.HostAuthSaveRequest{Name: name, JSON: raw})
-	rawResp, err := callHostCall(pluginabi.MethodHostAuthSave, body)
+	// json.RawMessage 会被 json.Marshal 原样嵌入 (不是 base64)。
+	// 直接传已 Marshal 的 []byte 会让 callHost 再编码一次, 宿主收到字符串而报
+	// "cannot unmarshal string into Go value of type pluginapi.HostAuthSaveRequest"。
+	rawResp, err := callHostCall(pluginabi.MethodHostAuthSave, pluginapi.HostAuthSaveRequest{Name: name, JSON: json.RawMessage(raw)})
 	if err != nil {
 		return fmt.Errorf("host.auth.save: %w", err)
 	}
