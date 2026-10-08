@@ -1,1 +1,0 @@
-{"bump": "patch", "note": "修复 host.auth.* 返回值被重复按 envelope 解析导致的 host.auth.save failed。main.go 的 callHost 已剥掉宿主外层 envelope 只返回 env.Result，但 provider 侧 hostAuthListFiles / hostAuthSaveJSON / decodeHostAuthGetResponse 又把返回值当 envelope 解析，把成功的裸 result 判成失败；三处改为直接解析内层结构，并清理失去引用的 envelope 类型别名。重写回归测试同时锁定出站载荷(必须是对象, 不能是 base64 字符串)与入站返回值(已是内层 result)两层契约。"}
