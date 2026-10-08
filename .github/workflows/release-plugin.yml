@@ -31,8 +31,12 @@ jobs:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     needs: parse-tag
     runs-on: ${{ matrix.runner }}
+    # 单平台构建 (含依赖下载) 正常几分钟内完成; 超时避免 runner 卡死拖住整个
+    # release。max-parallel 与矩阵规模一致, 四个平台并行构建。
+    timeout-minutes: 30
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         include:
           - goos: linux
@@ -102,6 +106,7 @@ jobs:
     name: Publish Release Assets
     needs: [parse-tag, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -163,8 +168,11 @@ jobs:
 
   record:
     name: Record Artifact Hashes
-    needs: release
+    # parse-tag 也要列进来: 下面的 setup-go 用 needs.parse-tag.outputs.plugin_id
+    # 取 go.mod; 只写 needs: release 时该输出不可见。
+    needs: [parse-tag, release]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
     concurrency:
@@ -179,7 +187,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          # 与插件模块声明的 go 指令保持一致 (硬编码版本会随 go.mod 升级而漂移)
+          go-version-file: plugins/${{ needs.parse-tag.outputs.plugin_id }}/go.mod
           cache: true
 
       - name: Download release assets and record hashes

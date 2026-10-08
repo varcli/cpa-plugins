@@ -30,30 +30,50 @@ func billingBaseFor(sa *storedAuth) string {
 }
 
 // billingClientType/Version are the desktop client's Cosy identity headers.
-// v0.8.22 (live-verified 2026-09-21 against openapi.qoder.com.cn and
-// openapi.qoder.sh): the billing surface gates the campaigns response on
-// Cosy-ClientType — the same credential that answers
-// showCampaign:false to a bare request returns the live daily "100 Credits"
-// campaign once the header is present. Without it the CN campaigns list can
-// come back flag-less AND row-less, which the v0.12.80 CLAIMABLE-row inference
-// cannot recover from: the panel shows "今日暂无可领取权益" and the day's
-// benefit is silently skipped. Sending a desktop identity on every billing
-// call is idempotent — where upstream does not gate, the response is unchanged.
+//
+// v0.8.47 (user-provided working Python script + official client main.log
+// capture, 2026-10-03): the official client's actual request log shows
+//
+//	"Cosy-ClientType":"10", "Cosy-Version":"0.3.4"
+//
+// — Cosy-Version is the PROTOCOL version, NOT the app version (package.json's
+// 0.4.3 is the Electron app version, a different thing). The previous 0.4.3
+// value was set in v0.8.35 from a misreading of the asar; the user's working
+// script confirms 0.3.4 is the correct value that returns the full campaigns
+// list including the daily CLAIM_BENEFIT 100-Credits row.
 const (
 	billingClientType = "10"
 	billingClientVer  = "0.3.4"
 )
 
+// billingHeaders sets the shared billing auth + identity headers.
+//
+// v0.8.46 (asar forensics): the official client's createRequestHeaders →
+// YBr builds headers as {Accept, User-Agent, Authorization, Cosy-ClientType,
+// Cosy-Version, Cosy-MachineOS, Cosy-MachineHostname, Cosy-MachineId,
+// Cosy-MachineToken, Cosy-MachineCode, Cosy-MachineType}. It does NOT set
+// Content-Type for GET requests — only POST requests with a body carry it
+// (set by the JS fetch call inside the WebView, not by the header builder).
+// The old code unconditionally set Content-Type:application/json on every
+// request including GETs; some API gateways treat a GET with Content-Type
+// as a non-browser request and may apply different filtering. Removing it
+// from GET aligns with the official client's wire format.
 func billingHeaders(req *http.Request, sa *storedAuth) {
 	// QoderWork billing endpoints authenticate with the active token as a
 	// plain Bearer — jobToken (jt-) or device token (dt-), both accepted
 	// upstream (verified live 2026-07-27). No COSY signing (KNOWLEDGE §2).
 	req.Header.Set("Authorization", "Bearer "+sa.Auth.AccessToken)
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Qoder")
 	req.Header.Set("Cosy-ClientType", billingClientType)
 	req.Header.Set("Cosy-Version", billingClientVer)
+	// Content-Type is set by the caller for POST requests with a body,
+	// NOT here — the official client's header builder doesn't include it
+	// in the base headers for GET requests.
+	// 0.8.42 (adapted from bfSan f05e9e3): the billing surface additionally
+	// expects the web-session cookies (acw_tc / qoder_csrf_token) and the
+	// mirrored CSRF header.
+	applyBillingSessionHeaders(req, sa)
 }
 
 // checkinStatusResponse mirrors GET /sash/api/v1/me/daily-check-in/status
@@ -73,7 +93,8 @@ type checkinStatusResponse struct {
 // regions now claim through the campaigns system — upstream DISABLED the
 // legacy CN daily-check-in globally (status reports DISABLED with zero
 // streak; claim answers 409 on unclaimed days and grants no credits;
-// verified upstream 2026-09-21). Calling the legacy claim only produced false
+// verified upstream 2026-09-21, cross-checked against the qoder2api
+// project's packet capture). Calling the legacy claim only produced false
 // "今日已签"/failure toasts on healthy CN accounts — the field report behind
 // this change.
 //
@@ -107,6 +128,7 @@ func fetchLegacyCheckinStatus(sa *storedAuth) (*checkinStatusResponse, error) {
 	if err != nil {
 		return nil, err
 	}
+	absorbBillingResponse(sa, billingBaseFor(sa), resp)
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("checkin status http %d body=%s", resp.StatusCode, truncateRedacted(string(resp.Body), 200))
 	}
@@ -166,7 +188,7 @@ type quotaUsageResponse struct {
 		Used      float64 `json:"used"`
 		Remaining float64 `json:"remaining"`
 	} `json:"addOnQuota"`
-	// v0.8.17: the quota response also
+	// v0.8.17 (fork libo0118/qoder-custom review): the quota response also
 	// carries dedicated resource packages (check-in / campaign grants) and an
 	// organization shared pool. The old two-pool sum silently DROPPED them, so
 	// the panel under-reported real credits whenever an account held such a
@@ -176,7 +198,7 @@ type quotaUsageResponse struct {
 }
 
 // quotaPool is one resource pool in the quota/usage response. Field names
-// mirror userQuota's shape.
+// mirror userQuota's shape (verified against the fork's parsed struct).
 type quotaPool struct {
 	Name      string  `json:"name"`
 	Total     float64 `json:"total"`
@@ -187,7 +209,11 @@ type quotaPool struct {
 // fetchUserResource queries QoderWork's quota endpoint and aggregates base +
 // add-on credits into the panel's creditsSummary shape.
 func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
-	req, err := http.NewRequest(http.MethodGet, upstreamBaseFor(sa)+"/api/v2/quota/usage", nil)
+	// billingBaseFor (not upstreamBaseFor): quota/plan ARE billing calls —
+	// routing them through the shared seam also makes them interceptable
+	// by the billingBaseOverride test seam.
+	base := billingBaseFor(sa)
+	req, err := http.NewRequest(http.MethodGet, base+"/api/v2/quota/usage", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +222,11 @@ func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 	if err != nil {
 		return nil, err
 	}
+	absorbBillingResponse(sa, base, resp)
 	if resp.StatusCode >= 400 {
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, &authRejectedError{status: resp.StatusCode, err: fmt.Errorf("quota/usage http %d body=%s", resp.StatusCode, truncateRedacted(string(resp.Body), 200))}
+		}
 		return nil, fmt.Errorf("quota/usage http %d body=%s", resp.StatusCode, truncateRedacted(string(resp.Body), 200))
 	}
 	var q quotaUsageResponse
@@ -207,7 +237,7 @@ func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 }
 
 // summarizeQuotaResponse folds the parsed quota/usage response into the
-// panel's creditsSummary shape. v0.8.17:
+// panel's creditsSummary shape. v0.8.17 (fork libo0118/qoder-custom review):
 // dedicated resource packages and the org shared pool join the totals AND
 // surface as their own package rows — the old two-pool sum silently dropped
 // them, under-reporting real credits for accounts holding such packages.
@@ -255,7 +285,8 @@ type planResponse struct {
 }
 
 func fetchPaymentType(sa *storedAuth) string {
-	req, err := http.NewRequest(http.MethodGet, upstreamBaseFor(sa)+"/api/v2/user/plan", nil)
+	base := billingBaseFor(sa)
+	req, err := http.NewRequest(http.MethodGet, base+"/api/v2/user/plan", nil)
 	if err != nil {
 		return ""
 	}
@@ -264,6 +295,7 @@ func fetchPaymentType(sa *storedAuth) string {
 	if err != nil || resp.StatusCode >= 400 {
 		return ""
 	}
+	absorbBillingResponse(sa, base, resp)
 	var p planResponse
 	if err := json.Unmarshal(resp.Body, &p); err != nil {
 		return ""

@@ -15,12 +15,20 @@ import (
 	"time"
 )
 
-// check-in schedule: 10:00 and 21:00 local time.
+// check-in schedule: 10:00, 15:00 and 21:00 local time.
 // 10 replaces 9: the CN daily check-in activity opens at 10:00 local
-// (2026-09-18~09-30 activity — "每天 10:00 起可领 100 Credits"); a 09:00 tick
-// hits "活动未开始" and fails.
+// (hope0719/qoder-check-in README, 2026-09-18~09-30 activity — "每天
+// 10:00 起可领 100 Credits"); a 09:00 tick hits "活动未开始" and fails.
 // 21 stays as the evening retry/keepalive companion.
-var checkinHours = []int{10, 21}
+// 15 joins in v0.8.57 (field report "init 还是有概率不能签到"): a mid-day
+// compensation tick between the 10:00 refresh and the evening companion —
+// when the 10:00 state was bad (hidden row + cold probe memo, a latched
+// NOT_ELIGIBLE spanning the refresh, upstream grant lag), the account
+// self-heals the same afternoon instead of waiting for 21:00. Every gate
+// in front of the claim is idempotent (TodayCheckedIn / ALREADY_CLAIMED /
+// per-round probe latch), so the extra tick costs a status read per account
+// on the healthy path.
+var checkinHours = []int{10, 15, 21}
 
 // plugin-level config decoded from plugin.register/reconfigure config_yaml.
 var (
@@ -31,7 +39,7 @@ var (
 	// /v0/management/usage/import (only path that reaches request monitoring;
 	// c-shared plugins cannot use host usage.DefaultManager/redisqueue).
 	//
-	// Resolution order (env/build injection, the community convention):
+	// Resolution order (community-style, like codex-auth-importer env injection):
 	//  1) plugins.configs.qoderwork.usage_report_* in config.yaml
 	//  2) env USAGE_REPORT_URL / USAGE_REPORT_KEY / CPAMP_ADMIN_KEY
 	//  3) secret files (docker secrets / bind-mount), e.g. /run/secrets/cpamp_admin_key
@@ -56,6 +64,25 @@ var (
 	// plain failed request carrying a real HTTP status (see streamHeadGate).
 	streamHeadTimeoutSecs int
 	streamHeadTimeoutMu   sync.RWMutex
+
+	// claimUnverified: config_yaml claim_unverified, default false. When true
+	// the Pro-claim flow may claim a CLAIMABLE campaigns row whose reward
+	// face value could NOT be verified (unreadable or absent) instead of
+	// only reporting it. Rows that reveal a readable reward are never
+	// claimed here — the flag only covers the cannot-verify bucket.
+	claimUnverified   bool
+	claimUnverifiedMu sync.RWMutex
+
+	// checkinRoundSeeds: config_yaml checkin_round_seeds, v0.8.58. Operator
+	// supplied per-region daily-round campaign UUIDs for the bypass probe's
+	// last-resort fallback ("intl=01a0…,cn=01a0…"). Deployments whose
+	// campaigns list is permanently identity-filtered (Intl + derived
+	// machine identity) never see the daily row, so their probe memo never
+	// seeds — a seed id lets check-in still claim. The upstream claim
+	// verdict stays the authority: a stale seed answers typed
+	// CAMPAIGN_NOT_ACTIVE and is retried after the 30-min latch expires.
+	checkinRoundSeeds   map[string]string
+	checkinRoundSeedsMu sync.RWMutex
 )
 
 // Default URL tries localhost first (works for both bare-metal and Docker
@@ -69,18 +96,29 @@ const defaultUsageReportURL = "http://127.0.0.1:18317/v0/management/usage/import
 const fallbackUsageReportURL = "http://cpa-manager-plus:18317/v0/management/usage/import"
 
 // configure decodes plugin config from the lifecycle request.
+// v0.8.29 (issue #24): login_region is STICKY — it only changes when the
+// incoming config explicitly carries the key (same semantics trae shipped in
+// v0.12.3). The host may resend Register/Reconfigure with a bare or foreign
+// config block (e.g. during auth-store churn); resetting to cn on those made
+// intl logins flip regions mid-flight. Values are read from a real YAML
+// decode first (yaml.v3 rides in via the SDK), so flow-style one-liners
+// (`trae: {enabled: true, login_region: intl}`) and JSON payloads parse too;
+// the historical line-scan stays as the fallback for malformed YAML.
 func configure(raw []byte) {
 	// Parse config without holding any lock (fixes nested-lock hazard).
 	nextCheckinAuto := true
 	nextLifecycleAuto := true
 	nextSchedulerMode := schedulerModeOff // reset to default on reconfigure
 	nextKeepaliveAuto := true
-	nextLoginRegion := "" // sticky: empty = keep current (issue #24)
+	nextLoginRegion := ""  // sticky: empty = keep current (issue #24)
+	nextLoginDialect := "" // sticky: empty = keep current (v0.8.40)
 	nextMgmtKey := ""
 	nextStreamHeadTimeout := 0
 	// v0.13.0: not sticky — an absent key means the default (qoder/ + on).
 	nextModelPrefix := defaultModelPrefix
 	nextModelPrefixEnabled := true
+	nextClaimUnverified := false
+	nextRoundSeeds := ""
 
 	cfgURL, cfgKey := "", ""
 	if len(raw) > 0 {
@@ -97,6 +135,11 @@ func configure(raw []byte) {
 			if m, ok := decodePluginConfigYAML(req.ConfigYAML); ok {
 				if v, present := m["login_region"]; present {
 					nextLoginRegion = normalizeRegion(configScalarString(v))
+				}
+				if v, present := m["login_dialect"]; present {
+					if d := strings.ToLower(configScalarString(v)); d == loginDialectCockpit || d == loginDialectDesktop {
+						nextLoginDialect = d
+					}
 				}
 				if v, present := m["checkin_auto"]; present {
 					nextCheckinAuto = configScalarBool(v)
@@ -131,6 +174,12 @@ func configure(raw []byte) {
 				}
 				if v, present := m["enable_model_prefix"]; present {
 					nextModelPrefixEnabled = configScalarBool(v)
+				}
+				if v, present := m["claim_unverified"]; present {
+					nextClaimUnverified = configScalarBool(v)
+				}
+				if v, present := m["checkin_round_seeds"]; present {
+					nextRoundSeeds = configScalarString(v)
 				}
 			}
 			for _, line := range strings.Split(string(req.ConfigYAML), "\n") {
@@ -173,6 +222,13 @@ func configure(raw []byte) {
 					v = strings.Trim(v, "\"'")
 					nextLoginRegion = normalizeRegion(v)
 				}
+				if strings.HasPrefix(line, "login_dialect:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "login_dialect:"))
+					v = strings.Trim(v, "\"'")
+					if d := strings.ToLower(v); d == loginDialectCockpit || d == loginDialectDesktop {
+						nextLoginDialect = d
+					}
+				}
 				if strings.HasPrefix(line, "stream_head_timeout:") {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "stream_head_timeout:"))
 					v = strings.TrimSpace(strings.Trim(v, "\"'"))
@@ -193,14 +249,17 @@ func configure(raw []byte) {
 					v = strings.Trim(v, "\"'")
 					nextModelPrefixEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
 				}
+				if strings.HasPrefix(line, "claim_unverified:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "claim_unverified:"))
+					nextClaimUnverified = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
+				if strings.HasPrefix(line, "checkin_round_seeds:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "checkin_round_seeds:"))
+					nextRoundSeeds = strings.Trim(v, "\"'")
+				}
 			}
 		}
 	}
-
-	// v0.13.0: the advertised model namespace follows the current config on
-	// every register/reconfigure (non-sticky). Applied before the model serve
-	// paths can observe it.
-	setModelPrefixConfig(nextModelPrefix, nextModelPrefixEnabled)
 
 	// Apply each setting under its own lock — no nesting.
 	checkinAutoMu.Lock()
@@ -230,6 +289,27 @@ func configure(raw []byte) {
 		loginRegionMu.Unlock()
 	}
 
+	// Sticky (v0.8.40): only an explicit login_dialect key moves the pointer.
+	if nextLoginDialect != "" {
+		loginDialectMu.Lock()
+		if loginDialect != nextLoginDialect {
+			log.Printf("qoder: login_dialect=%s applied (new intl logins use the %s wire dialect)", nextLoginDialect, nextLoginDialect)
+		}
+		loginDialect = nextLoginDialect
+		loginDialectMu.Unlock()
+	}
+
+	claimUnverifiedMu.Lock()
+	claimUnverified = nextClaimUnverified
+	claimUnverifiedMu.Unlock()
+
+	applyRoundSeeds(nextRoundSeeds)
+
+	// v0.13.0: the advertised model namespace follows the current config on
+	// every register/reconfigure (non-sticky). Applied before the model serve
+	// paths can observe it.
+	setModelPrefixConfig(nextModelPrefix, nextModelPrefixEnabled)
+
 	setStreamHeadTimeout(nextStreamHeadTimeout)
 
 	// management key: config_yaml > env > keep existing. Empty stays empty
@@ -243,6 +323,66 @@ func configure(raw []byte) {
 
 	resolveUsageReport(cfgURL, cfgKey)
 	ensureScheduler()
+}
+
+// parseRoundSeeds turns the config scalar "intl=<uuid>,cn=<uuid>" (or
+// space/semicolon separated) into the per-region map. Entries whose value is
+// not a 36-char UUID shape are dropped silently — a pasted act- key must
+// never ride the claim path (the upstream demands the UUID form; live
+// verified 2026-10-05). Unknown region labels are kept normalized so
+// "global=" maps to intl.
+func parseRoundSeeds(s string) map[string]string {
+	out := map[string]string{}
+	for _, part := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ';' || r == ' ' || r == '\t' }) {
+		k, v, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		region := normalizeRegion(k)
+		id := strings.TrimSpace(v)
+		if !roundSeedUUIDShape(id) {
+			continue
+		}
+		out[region] = strings.ToLower(id)
+	}
+	return out
+}
+
+// roundSeedUUIDShape matches the canonical 8-4-4-4-12 hex UUID the claim
+// endpoint demands.
+func roundSeedUUIDShape(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, r := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// applyRoundSeeds stores the operator's seed map (nil/empty clears it).
+func applyRoundSeeds(s string) {
+	parsed := parseRoundSeeds(s)
+	checkinRoundSeedsMu.Lock()
+	checkinRoundSeeds = parsed
+	checkinRoundSeedsMu.Unlock()
+}
+
+// operatorRoundSeed returns the operator's seed for one region ("" when
+// unset).
+func operatorRoundSeed(region string) string {
+	checkinRoundSeedsMu.RLock()
+	defer checkinRoundSeedsMu.RUnlock()
+	return checkinRoundSeeds[region]
 }
 
 // setStreamHeadTimeout stores the head-gate window in seconds. Negative values
@@ -269,9 +409,20 @@ func streamHeadTimeout() time.Duration {
 	return time.Duration(secs) * time.Second
 }
 
+// claimUnverifiedEnabled reports whether the Pro-claim flow may claim a
+// CLAIMABLE row whose reward face value could not be verified. Default
+// off — the face-value gate stays the safe default; this is an explicit
+// per-deployment opt-in.
+func claimUnverifiedEnabled() bool {
+	claimUnverifiedMu.RLock()
+	defer claimUnverifiedMu.RUnlock()
+	return claimUnverified
+}
+
 // resolveUsageReport fills usageReportURL/key from config → env → secret files.
-// Community plugins inject management keys via env/build rather than the
-// plaintext CPA remote-management.secret-key (that field is bcrypt-hashed).
+// Mirrors community plugins that inject management keys via env/build (e.g.
+// codex-auth-importer CODEX_AUTH_IMPORTER_MANAGEMENT_KEY), not plaintext CPA
+// remote-management.secret-key (that field is bcrypt-hashed).
 func resolveUsageReport(cfgURL, cfgKey string) {
 	url := firstNonEmpty(
 		strings.TrimSpace(cfgURL),

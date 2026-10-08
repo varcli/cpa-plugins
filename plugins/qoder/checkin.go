@@ -2,12 +2,21 @@
 // handleManualCheckin endpoint, the 09:00 / 21:00 auto scheduler, and the
 // per-account mutex that prevents duplicate check-ins from racing browser
 // tabs. CN accounts are excluded — they use one-shot trial claims instead.
+//
+// v0.12.109 context (official Intl+CN desktop v0.4.3 asar forensics + field
+// report): the legacy daily UI no longer exists in the client — benefits ride
+// the campaigns system, claimed INSIDE the server-delivered activity WebView
+// (qoder.campaign postMessage protocol, verdict kind=claim_succeeded), while
+// the host only injects Authorization + Cosy-* identity headers. The client's
+// own launch step (campaigns status + client_launch_26 limited-number) is
+// mirrored by campaignLaunchSync (campaign.go). Current official newbie
+// grants: first-login 300 + campaign 100 credits; the +1800 Pro pack is no
+// longer delivered (user field report 2026-10-01).
 package main
 
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -119,8 +128,12 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 			return
 		}
 		// CN: daily check-in when enabled.
+		// v0.8.39: the ci.Active gate is gone — a hidden daily row
+		// (dedup / device filtering) reports Active=false while the
+		// round's claim endpoint still answers; the probe inside
+		// performCheckinCall owns the verdict now.
 		ci, err := fetchCheckinStatus(sa)
-		if err == nil && ci != nil && ci.Active && !ci.TodayCheckedIn {
+		if err == nil && ci != nil && !ci.TodayCheckedIn {
 			if _, callErr := performCheckinCall(sa); callErr == nil {
 				// v0.8.8: 记录签到时刻（与手动签到一致），让紧随
 				// 其后的 reconcile 处于 lifecycle 宽限窗口内。
@@ -283,22 +296,26 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 		out["total_credits"] = ci.TotalCredits
 		return out
 	}
-	// v0.8.18 (campaign dialect): claimed Intl campaigns drop out of
-	// /me/campaigns entirely, so an inactive summary means "nothing left to
-	// claim today" — already claimed earlier or no campaign running. Surface
-	// it as a no-op, not a failure (reason=none, neutral panel toast).
-	// v0.12.80: CN joined the campaign dialect (legacy daily-check-in is
-	// DISABLED upstream), so this guard now covers both regions — an
-	// inactive CN summary likewise means "nothing claimable today", never
-	// an error.
-	if capabilitiesForRegion(authRegion(sa)).Contract == checkinContractCampaign && !ci.Active {
-		out["success"] = true
-		out["skipped"] = true
-		out["reason"] = "none"
-		out["message"] = "今日暂无可领取权益"
-		return out
-	}
+	// v0.8.18 (campaign dialect) / retired v0.8.39: the old
+	// !ci.Active early-skip assumed an inactive summary meant "nothing left
+	// to claim today" — but the daily row is HIDDEN from the list in two
+	// live states (per-person dedup, device-targeted filtering; hub field
+	// practice), and the bypass-list verdict probe inside
+	// performCampaignCheckin is exactly what still gets a real answer
+	// (+100 / 今日已签 / 同人已领) there. Skipping early made those
+	// accounts silently unclaimable forever (field report u673e7fcc).
+	// performCampaignCheckin now owns every no-op verdict; this flow just
+	// renders them.
 
+	// v0.8.40 (field report "成功后积分无变化"): snapshot the credits
+	// pools BEFORE the claim so the panel can show the real delta. The
+	// old flow reported 签到成功 +100 with the post-claim balance only —
+	// when the claimed row was a coupon (redemptionCode, no credits) or
+	// the grant lagged, the user had no way to see WHY nothing moved.
+	var creditsBefore *creditsSummary
+	if cr, err := fetchUserResource(sa); err == nil {
+		creditsBefore = cr
+	}
 	// Step 2: POST claim (5s budget).
 	res, err := performCheckinCall(sa)
 	if err != nil {
@@ -320,17 +337,107 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 		rememberCheckinMoment(f.ID)
 		return out
 	}
+	// v0.12.109: "nothing claimable" is a NORMAL state, not a failure — the
+	// summary's Active flag can be true while every row is already claimed
+	// or VIEW_DETAILS-gated (the official newbie/Pro packs hide behind the
+	// activity page and are correctly refused here). The old path surfaced
+	// performCampaignCheckin's diagnosis as 上游未确认签到成功：<msg>, an
+	// error toast for a healthy account (field report u673e7fcc). Render
+	// the row-level diagnosis as a neutral skip instead.
+	if result, _ := res["result"].(string); result == "NOTHING_CLAIMABLE" {
+		out["success"] = true
+		out["skipped"] = true
+		out["reason"] = "none"
+		out["message"] = "今日暂无可领取权益"
+		if msg, ok := res["message"].(string); ok && msg != "" {
+			out["message"] = msg
+		}
+		return out
+	}
+	// v0.8.40: the bypass probe surfaces the dedup verdict — a sibling
+	// account on this machine identity already took the round's grant.
+	// That is a normal multi-account state (hub buckets it separately),
+	// never an error toast.
+	if result, _ := res["result"].(string); result == "BLOCKED" {
+		out["success"] = true
+		out["skipped"] = true
+		out["reason"] = "blocked"
+		out["message"] = "同人已领取（同一设备身份下的其他账号本轮已领，服务端按人去重）"
+		if msg, ok := res["message"].(string); ok && msg != "" {
+			out["message"] = msg
+		}
+		return out
+	}
+	// v0.8.40 (hub taxonomy, field report "概率性不成功"): eligibility
+	// verdicts — out-of-stock (daily rounds are 先到先得, refresh
+	// 10:00 UTC+8), achievement-gated new-user rows, inactive rounds,
+	// risk-control holds. Normal, retryable upstream states, not claim
+	// failures: render as typed informational skips instead of the old
+	// 上游未确认签到成功 error toast.
+	if result, _ := res["result"].(string); result == "NOT_ELIGIBLE" {
+		out["success"] = true
+		out["skipped"] = true
+		out["reason"] = "not_eligible"
+		fc, _ := res["failure_code"].(string)
+		out["failure_code"] = fc
+		msg, _ := res["message"].(string)
+		if msg == "" {
+			msg = "暂不可领取：" + fc
+		}
+		out["message"] = msg
+		return out
+	}
 	if success, _ := res["success"].(bool); success {
 		out["success"] = true
 		if rc, ok := res["rewardCredits"].(float64); ok {
 			out["reward_credits"] = int64(rc)
 		}
-		out["message"] = "签到成功"
-		// Refresh the credits snapshot so the panel shows the post-checkin
-		// balance immediately (check-in grants new credits). Best-effort:
-		// a failure here must not flip the check-in result to error.
+		// v0.8.40: coupon rows answer CLAIMED with a redemptionCode and
+		// zero credits. Surface the code verbatim and an honest
+		// message — "积分无变化" reports start when a non-credits
+		// grant renders as a plain 签到成功 +100.
+		if code, ok := res["redemption_code"].(string); ok && strings.TrimSpace(code) != "" {
+			out["redemption_code"] = code
+		}
+		if msg, ok := res["message"].(string); ok && strings.TrimSpace(msg) != "" {
+			out["message"] = msg
+		} else {
+			out["message"] = "签到成功"
+		}
+		// v0.8.40 (field report "成功后积分无变化"): verify the grant
+		// against the credits pools. Delta = TotalRemain(after) −
+		// TotalRemain(before), from the same /api/v2/quota/usage fold
+		// the panel renders — so a coupon claim (delta 0) and a lagging
+		// grant (delta 0 seconds after the POST) are both VISIBLE
+		// instead of silent. Best-effort: a snapshot failure must not
+		// flip the check-in result.
+		//
+		// v0.8.49: sleep 3s before re-fetching credits. The server's
+		// addOnQuota update lags behind the claim response by 1-5s
+		// (field report: "签到成功但积分没增加"). Without the delay,
+		// delta=0 every time and the user sees a confusing "积分池暂未
+		// 变动" message instead of the actual +100.
+		if rc2, _ := res["rewardCredits"].(float64); rc2 > 0 {
+			time.Sleep(3 * time.Second)
+		}
 		if cr, crErr := fetchUserResource(sa); crErr == nil && cr != nil {
 			out["credits"] = cr
+			if creditsBefore != nil {
+				delta := cr.TotalRemain - creditsBefore.TotalRemain
+				out["credits_before"] = creditsBefore.TotalRemain
+				out["credits_after"] = cr.TotalRemain
+				out["credits_delta"] = delta
+				if delta <= 0 {
+					msg, _ := out["message"].(string)
+					if rc, _ := res["rewardCredits"].(float64); rc > 0 {
+						out["message"] = msg + "（上游已确认领取，但积分池暂未变动：发放可能有秒级延迟）"
+					} else if _, isCoupon := res["redemption_code"].(string); !isCoupon {
+						if kind, _ := res["benefit_kind"].(string); !strings.EqualFold(kind, "REDEMPTION_CODE") {
+							out["message"] = msg + "（本次奖励非积分或面值未下发）"
+						}
+					}
+				}
+			}
 		}
 		// v0.8.8: 记录签到时刻 —— reconcile 的 lifecycle 在宽限窗口内
 		// 不做 disable，防止签到后积分池刷新延迟时被误禁用。
@@ -445,52 +552,258 @@ func checkinLockFor(authIndex string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-// checkProUpgradeEligibility returns whether the account can still claim the
-// one-time Pro Upgrade pack (+1800).
-func checkProUpgradeEligibility(sa *storedAuth) (bool, error) {
-	req, err := http.NewRequest(http.MethodGet, upstreamBaseFor(sa)+"/sash/api/v1/me/pro-upgrade/eligibility", nil)
-	if err != nil {
-		return false, err
+// v0.8.34 (upstream forensics): the standalone pro-upgrade endpoints this
+// plugin called since v0.8.18 — /sash/api/v1/me/pro-upgrade/{eligibility,claim}
+// — DO NOT EXIST upstream. Field report ("领取失败 eligibility: http 404",
+// CN account ud2d62d72) verified against the OFFICIAL CN desktop client
+// v0.4.3 (x-oss-meta-commit e921dfbf, sha256 a796a175…05084f5): the shipped
+// app.asar contains ZERO matches for "pro-upgrade"; its entire /sash/api/v1
+// surface is campaigns / achievements / ai-conversations / organizations.
+// The eligibility→claim flow was endpoint guesswork (v0.8.33's dual-prefix
+// probe only guessed two prefixes instead of removing the guess); the 404
+// was upstream truthfully answering "no such route".
+//
+// The campaigns system is the only verifiable benefits channel (the same one
+// daily check-in rides): GET /sash/api/v1/me/campaigns lists the account's
+// rows — eligibility IS the row's claimStatus — and POST
+// .../campaigns/{id}/claim claims one (campaign.go claimCampaignByID).
+// handleClaimPro now claims rows that look like the Pro upgrade pack and,
+// when none is present, answers with a diagnostic listing instead of a bare
+// http error.
+//
+// v0.8.36 (machine identity, cross-verified against the qoder2api-hub
+// capture): the "open the activity once inside the official client" gate
+// is NOT a session sync — the campaigns surface filters DEVICE-TARGETED
+// rows (daily 100 Credits, the +1800 Pro pack) on the Cosy-Machine*
+// request headers, and the real values come from the official client's
+// native bridge <install>/resources/umid/runtime-info.exe
+// (`prod --account-stdin` → machineToken/machineType/machineCode/vmInfo).
+// A derived/absent identity gets HTTP 200 with those rows silently
+// missing — hub live observation: switching to the native identity made
+// the device rows appear immediately. machine_identity.go now attaches
+// the real identity when the official client is installed (30min cache,
+// machine-level), falls back to the hub-parity derivation otherwise, and
+// the claimPro diagnostics say which one ran (plus the VM exclusion the
+// bridge's vmInfo reveals). The +1800 face value can also hide behind a
+// VIEW_DETAILS row with no listed benefit — the read-only
+// GET .../campaigns/{id}/reward probe reveals it before claiming.
+
+// campaignLooksLikeProUpgrade reports whether a campaign row looks like the
+// one-time Pro upgrade pack. Upstream never published the exact key (live
+// keys observed in the act-YYYYMMDD-NNN form, which no name substring can
+// match), so the match combines two evidence sources: a pro/upgrade-looking
+// key or actionType, or a big one-shot CREDITS benefit (the Pro pack's
+// verified face value is +1800 — qoder2api-hub). It never fabricates a
+// campaign id, and unmatched rows are surfaced in the diagnostics instead of
+// being claimed blind.
+func campaignLooksLikeProUpgrade(c *campaign) bool {
+	for _, s := range []string{c.CampaignKey, c.ActionType} {
+		l := strings.ToLower(s)
+		if strings.Contains(l, "pro") || strings.Contains(l, "upgrade") {
+			return true
+		}
 	}
-	billingHeaders(req, sa)
-	resp, err := hostHTTPDo(req)
-	if err != nil {
-		return false, err
+	if c.Benefit != nil && strings.EqualFold(c.Benefit.Kind, "CREDITS") && c.Benefit.Amount >= 1000 {
+		return true
 	}
-	if resp.StatusCode >= 400 {
-		return false, fmt.Errorf("http %d", resp.StatusCode)
-	}
-	var m struct {
-		Eligible bool `json:"eligible"`
-	}
-	if err := json.Unmarshal(resp.Body, &m); err != nil {
-		return false, err
-	}
-	return m.Eligible, nil
+	return false
 }
 
-// claimProUpgrade claims the one-time Pro Upgrade pack (+1800 credits).
-func claimProUpgrade(sa *storedAuth) (map[string]any, error) {
-	req, err := http.NewRequest(http.MethodPost, endpointProUpgradeFor(sa), strings.NewReader("{}"))
+// claimProViaCampaigns claims the Pro upgrade pack through the campaigns
+// channel. Results:
+//   - a pro-looking CLAIMABLE row exists → claim it, panel shape out
+//   - pro-looking row already CLAIMED → success=false, 已领取 message
+//   - no pro-looking row → success=false + diagnostic listing of the rows
+//     the server actually returned (plus the client-session hint)
+//
+// blindClaimCampaign (v0.8.37, config claim_unverified) attempts the verified
+// claim endpoint on a CLAIMABLE row whose reward face value could not be
+// verified. The claim response is the only ground-truth eligibility oracle —
+// the flag trades the face-value proof for that definitive answer. Returns
+// (res, handled, err): handled=true means res carries a final verdict (success
+// or an actionable non-success shape) and the caller must return it;
+// handled=false means scanning continues (probes gains the failure trail).
+func blindClaimCampaign(sa *storedAuth, c *campaign, probes *[]string) (map[string]any, bool, error) {
+	res, err := claimCampaignByID(sa, c)
+	if err != nil {
+		return nil, false, err
+	}
+	if success, _ := res["success"].(bool); success {
+		return res, true, nil
+	}
+	if _, ok := res["result"]; ok {
+		return res, true, nil
+	}
+	if m, ok := res["message"].(string); ok && m != "" {
+		*probes = append(*probes, c.CampaignKey+"(盲领未成功: "+truncateRedacted(m, 80)+")")
+	} else {
+		*probes = append(*probes, c.CampaignKey+"(盲领未成功)")
+	}
+	return res, false, nil
+}
+
+func claimProViaCampaigns(sa *storedAuth) (map[string]any, error) {
+	// v0.8.18: Intl has no Pro-upgrade contract (capability fact, not a
+	// transient failure) — skip without firing a request that can only 404.
+	if !supportsProUpgrade(sa) {
+		return map[string]any{
+			"success": false,
+			"skipped": true,
+			"reason":  "unsupported",
+			"message": "国际版暂无 Pro 升级活动",
+		}, nil
+	}
+	status, err := fetchCampaignStatus(sa)
 	if err != nil {
 		return nil, err
 	}
-	billingHeaders(req, sa)
-	resp, err := hostHTTPDo(req)
-	if err != nil {
-		return map[string]any{"success": false, "message": err.Error()}, nil
+	var claimable, claimed *campaign
+	for i := range status.Campaigns {
+		c := &status.Campaigns[i]
+		if !campaignLooksLikeProUpgrade(c) {
+			continue
+		}
+		if strings.EqualFold(c.ClaimStatus, "CLAIMABLE") && claimable == nil {
+			claimable = c
+		}
+		if strings.EqualFold(c.ClaimStatus, "CLAIMED") && claimed == nil {
+			claimed = c
+		}
 	}
-	if resp.StatusCode >= 400 {
-		return map[string]any{"success": false, "message": fmt.Sprintf("http %d: %s", resp.StatusCode, truncateRedacted(string(resp.Body), 200))}, nil
+	if claimable != nil {
+		return claimCampaignByID(sa, claimable)
 	}
-	var m map[string]any
-	if err := json.Unmarshal(resp.Body, &m); err != nil {
-		return nil, err
+	out := map[string]any{"success": false}
+	if claimed != nil {
+		out["message"] = "Pro 升级包已领取过（活动行状态 CLAIMED）"
+		return out, nil
 	}
-	if _, ok := m["success"]; !ok {
-		m["success"] = true
+	// v0.8.36: the Pro pack can sit in the list as a row the name/benefit
+	// matcher cannot see — live shape: actionType=VIEW_DETAILS, CLAIMABLE,
+	// NO listed benefit (the real face value lives behind the activity
+	// page). The page reads it via the read-only
+	// GET /sash/api/v1/me/campaigns/{id}/reward (hub capture), so probe
+	// every unmatched CLAIMABLE row and claim ONLY the one whose revealed
+	// reward is the verified big one-shot CREDITS pack (+1800). Read-only
+	// probes never claim anything by themselves.
+	const (
+		rewardProbeCap    = 5
+		proPackMinCredits = 1000
+	)
+	probes := make([]string, 0, rewardProbeCap)
+	hintUnverified := false
+	for i := range status.Campaigns {
+		if len(probes) >= rewardProbeCap {
+			break
+		}
+		c := &status.Campaigns[i]
+		if !strings.EqualFold(c.ClaimStatus, "CLAIMABLE") || campaignLooksLikeProUpgrade(c) {
+			continue
+		}
+		body, rerr := fetchCampaignReward(sa, c.CampaignID)
+		if rerr != nil {
+			// v0.8.37: surface WHY the face value is unreadable — the
+			// reward endpoint's own status/body is a server verdict
+			// (404 = account not registered for the targeted pack,
+			// 403 = identity filtering), not parser noise.
+			// v0.8.43: GRANT_NOT_FOUND is that verdict's terminal form
+			// — the server has no grant record for this account, the
+			// round is closed. Report it as such and skip the opt-in
+			// hint (a blind claim would only replay the same 404).
+			if rewardReadDead(rerr) {
+				probes = append(probes, fmt.Sprintf("%s(活动已失效: 上游 GRANT_NOT_FOUND，本账号无此活动的发放记录)", c.CampaignKey))
+				continue
+			}
+			probes = append(probes, fmt.Sprintf("%s(面值不可读: %s)", c.CampaignKey, truncateRedacted(rerr.Error(), 100)))
+			hintUnverified = true
+			if claimUnverifiedEnabled() {
+				res, handled, cerr := blindClaimCampaign(sa, c, &probes)
+				if cerr != nil {
+					return nil, cerr
+				}
+				if handled {
+					return res, nil
+				}
+			}
+			continue
+		}
+		kind, amount := rewardBenefit(body)
+		if strings.EqualFold(kind, "CREDITS") && amount >= proPackMinCredits {
+			res, cerr := claimCampaignByID(sa, c)
+			if cerr != nil {
+				return nil, cerr
+			}
+			if success, _ := res["success"].(bool); success {
+				// The list row carried no benefit — report the reward's
+				// own face value instead of a zero.
+				if rc, _ := res["rewardCredits"].(float64); rc == 0 {
+					res["rewardCredits"] = float64(amount)
+				}
+				return res, nil
+			}
+			// Actionable non-success shapes (ALREADY_CLAIMED / BLOCKED)
+			// propagate as-is; anything else keeps scanning.
+			if _, ok := res["result"]; ok {
+				return res, nil
+			}
+			probes = append(probes, fmt.Sprintf("%s(reward=+%d 未到账)", c.CampaignKey, amount))
+			continue
+		}
+		if amount > 0 {
+			probes = append(probes, fmt.Sprintf("%s(reward=+%d %s)", c.CampaignKey, amount, kind))
+			continue
+		}
+		// v0.8.37: a 200 reward with no readable benefit is the same
+		// cannot-verify bucket as an unreadable one.
+		probes = append(probes, c.CampaignKey+"(reward 无面值)")
+		hintUnverified = true
+		if claimUnverifiedEnabled() {
+			res, handled, cerr := blindClaimCampaign(sa, c, &probes)
+			if cerr != nil {
+				return nil, cerr
+			}
+			if handled {
+				return res, nil
+			}
+		}
 	}
-	return m, nil
+	// No pro-looking row at all. Diagnose from the actual response instead
+	// of guessing an endpoint: list what the server returned and point at
+	// the client-session gate.
+	out["reason"] = "no_pro_row"
+	if len(status.Campaigns) == 0 {
+		out["message"] = "此账号活动列表为空——活动资格挂官方客户端会话，请先在官方客户端「福利中心」打开一次活动，再回来领取" + machineIdentityHint(sa)
+		return out, nil
+	}
+	keys := make([]string, 0, len(status.Campaigns))
+	for i := range status.Campaigns {
+		c := &status.Campaigns[i]
+		k := fmt.Sprintf("%s(%s/%s", c.CampaignKey, c.ActionType, c.ClaimStatus)
+		// v0.8.35: surface the upstream's own "why not" verdicts —
+		// achievement-gated rows and device-targeted filtering are the
+		// two live reasons a healthy account sees no claimable Pro row.
+		if c.UnavailableReason != "" {
+			k += ", reason=" + c.UnavailableReason
+		}
+		if c.RequiredAchievementKey != "" && !c.AchievementCompleted {
+			k += ", achievement=" + c.RequiredAchievementKey + " 未完成"
+		}
+		if c.Benefit != nil && c.Benefit.Amount > 0 {
+			k += fmt.Sprintf(", +%d", c.Benefit.Amount)
+		}
+		keys = append(keys, k+")")
+	}
+	out["message"] = "此账号活动列表暂无 Pro 升级项（现有：" + strings.Join(keys, "、") + "）。若刚注册，请先在官方客户端打开一次活动页同步资格后再试"
+	msg, _ := out["message"].(string)
+	if len(probes) > 0 {
+		msg += "；面值核对：" + strings.Join(probes, "、")
+	}
+	if hintUnverified && !claimUnverifiedEnabled() {
+		msg += "。面值不可核实的行默认不会自动领取——如需仍尝试领取，可配置 claim_unverified: true"
+	}
+	msg += machineIdentityHint(sa)
+	out["message"] = msg
+	return out, nil
 }
 
 // pruneCheckinLocks removes lock entries for auth indices that no longer
@@ -515,10 +828,12 @@ func pruneCheckinLocks() {
 	})
 }
 
-// handleClaimPro checks pro-upgrade eligibility for one account and claims
-// the one-time Pro pack (+ credits) when eligible. Surfaced as a panel
-// per-card button — NOT called automatically during login (login writes the
-// auth file first; this is a user-triggered post-login action).
+// handleClaimPro claims the one-time Pro pack for one account through the
+// campaigns channel (v0.8.34 — the standalone pro-upgrade endpoints never
+// existed upstream; see the forensics note above claimProViaCampaigns).
+// Surfaced as a panel per-card button — NOT called automatically during
+// login (login writes the auth file first; this is a user-triggered
+// post-login action).
 func handleClaimPro(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
 		AuthIndex string `json:"auth_index"`
@@ -536,28 +851,11 @@ func handleClaimPro(req pluginapi.ManagementRequest) map[string]any {
 		"auth_index": authIndex,
 		"nickname":   sa.Account.Nickname,
 	}
-	// v0.8.18: Intl has no Pro-upgrade contract (capability fact, not a
-	// transient failure) — skip instead of firing a request that can only 404.
-	if !supportsProUpgrade(sa) {
-		out["success"] = false
-		out["skipped"] = true
-		out["reason"] = "unsupported"
-		out["message"] = "国际版暂无 Pro 升级活动"
-		return out
-	}
-	eligible, err := checkProUpgradeEligibility(sa)
+	// Intl skip / diagnostics / claim all live in claimProViaCampaigns
+	// so the flow semantics have exactly one home.
+	res, err := claimProViaCampaigns(sa)
 	if err != nil {
-		out["error"] = "eligibility: " + err.Error()
-		return out
-	}
-	if !eligible {
-		out["success"] = false
-		out["message"] = "不可领取（已领或活动未开放）"
-		return out
-	}
-	res, err := claimProUpgrade(sa)
-	if err != nil {
-		out["error"] = "claim: " + err.Error()
+		out["error"] = "claim-pro: " + err.Error()
 		return out
 	}
 	for k, v := range res {

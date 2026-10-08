@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -71,7 +72,9 @@ func TestSaveAtomicRoundtripPreservesSOLOFields(t *testing.T) {
 	if _, err := os.Stat(fp + ".tmp"); !os.IsNotExist(err) {
 		t.Error("tmp file should not remain")
 	}
-	if fi, err := os.Stat(fp); err != nil || fi.Mode().Perm() != 0o600 {
+	// Windows does not map POSIX permission bits onto NTFS ACLs, so the
+	// 0600 assertion is meaningful only on unix builds.
+	if fi, err := os.Stat(fp); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Errorf("file mode=%v err=%v want 0600", fi.Mode().Perm(), err)
 	}
 	raw, err := os.ReadFile(fp)

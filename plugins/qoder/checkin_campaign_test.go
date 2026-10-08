@@ -1,7 +1,8 @@
 // checkin_campaign_test.go — v0.12.80: pins the CN check-in dialect switch.
 // Field report ("Qoder CN 账户仍然不能签到"): upstream DISABLED the legacy
 // daily-check-in system — claim answers 409 even on unclaimed days and
-// grants no credits (verified upstream 2026-09-21). Both regions now
+// grants no credits (verified upstream 2026-09-21, cross-checked against
+// the qoder2api project's packet-captured campaigns flow). Both regions now
 // claim via /sash/api/v1/me/campaigns; the legacy status endpoint survives
 // as a READ-ONLY stats supplement for CN. These HTTP-level tests pin the
 // routing (campaigns claim, legacy claim NEVER called) and the stats merge
@@ -14,6 +15,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newBillingServer spins up an httptest upstream and points billingBaseFor
@@ -45,6 +47,12 @@ func newBillingServer(t *testing.T, region string, respond map[string]func(r *ht
 	prev := billingBaseOverride
 	billingBaseOverride = func(string) string { return srv.URL }
 	t.Cleanup(func() { billingBaseOverride = prev })
+	// v0.8.39: the bypass-probe / launch-sync globals are package state —
+	// reset them per test so scenarios stay order-independent (a memo
+	// seeded by an earlier test would otherwise fire stray probe POSTs).
+	roundMemo = &campaignRoundMemo{perAccount: map[string]campaignRoundEntry{}, perRegion: map[string]campaignRoundEntry{}}
+	roundProbeLast = map[string]roundProbeLatch{}
+	launchSyncLast = map[string]time.Time{}
 	return srv
 }
 
@@ -209,5 +217,98 @@ func TestCNCheckinNoCampaignIsNoOp(t *testing.T) {
 	}
 	if sum.TodayCheckedIn {
 		t.Fatal("empty campaign list must not render as already checked in")
+	}
+}
+
+// v0.12.109 (field report u673e7fcc "上游未确认签到成功：message=当前没有可
+// 领取的活动"): a VIEW_DETAILS-only claimable list is a NORMAL state — the
+// official newbie/Pro packs hide behind the activity page; v0.8.41 refines
+// this — VIEW_DETAILS rows with a READABLE credits/redemption face value are
+// claimed (official-client parity), while an unreadable-face-value row stays
+// unclaimed unless claim_unverified is on. The claim endpoint must not be
+// hit in that state and the result must carry the typed NOTHING_CLAIMABLE
+// verdict with the row diagnosis, which checkinOneAccount renders as a skip
+// (reason=none).
+// v0.8.41 rename (was TestCheckinNothingClaimableViewDetailsIsTypedSkip):
+// the check-in now ATTEMPTS CLAIMABLE VIEW_DETAILS rows (issue #27 finding
+// 3 — the official client claims them too). What stays unclaimed is the
+// unreadable-face-value row while the claim_unverified opt-in is off: the
+// reward probe 404s, no blind claim happens, and the row's verdict rides
+// the diagnosis message (typed NOTHING_CLAIMABLE skip, reason=none).
+func TestCheckinViewDetailsUnreadableRewardStaysUnclaimed(t *testing.T) {
+	claimHit := false
+	newBillingServer(t, "cn", map[string]func(r *http.Request) (int, string){
+		"/sash/api/v1/me/campaigns": func(r *http.Request) (int, string) {
+			b, _ := json.Marshal(campaignStatusResponse{
+				ShowCampaign: true,
+				Campaigns: []campaign{{
+					CampaignID:  "camp-newbie",
+					CampaignKey: "act-20260901-922",
+					ActionType:  "VIEW_DETAILS",
+					ClaimStatus: "CLAIMABLE",
+				}},
+			})
+			return http.StatusOK, string(b)
+		},
+		"/sash/api/v1/me/campaigns/camp-newbie/claim": func(r *http.Request) (int, string) {
+			claimHit = true
+			return http.StatusOK, `{"status":"CLAIMED"}`
+		},
+		"/sash/api/v1/me/daily-check-in/status": func(r *http.Request) (int, string) {
+			return http.StatusOK, `{"status":"DISABLED"}`
+		},
+	})
+
+	res, err := performCheckinCall(cnAuth())
+	if err != nil {
+		t.Fatalf("performCheckinCall: %v", err)
+	}
+	if claimHit {
+		t.Fatal("unreadable-face-value VIEW_DETAILS row must stay unclaimed while claim_unverified is off")
+	}
+	if result, _ := res["result"].(string); result != "NOTHING_CLAIMABLE" {
+		t.Fatalf("result = %v, want NOTHING_CLAIMABLE", res["result"])
+	}
+	msg, _ := res["message"].(string)
+	if !strings.Contains(msg, "act-20260901-922") || !strings.Contains(msg, "VIEW_DETAILS") {
+		t.Fatalf("diagnosis must name the blocking row, got %q", msg)
+	}
+	if !strings.Contains(msg, "面值不可读") {
+		t.Fatalf("diagnosis must carry the unreadable-reward verdict, got %q", msg)
+	}
+}
+
+// v0.12.109: the official desktop client reads the client_launch_26
+// limited-number endpoint right after every campaigns status refresh (asar:
+// CampaignMainService status→resolveLimitedNumber, retry-once-when-empty).
+// campaignLaunchSync reproduces that launch step best-effort: exactly one
+// successful read per account per window, errors swallowed, never fatal.
+func TestCampaignLaunchSyncFiresLimitedNumber(t *testing.T) {
+	hits := 0
+	newBillingServer(t, "cn", map[string]func(r *http.Request) (int, string){
+		"/sash/api/v1/me/campaigns": func(r *http.Request) (int, string) {
+			return http.StatusOK, `{"showCampaign":false,"campaigns":[]}`
+		},
+		"/sash/api/v1/me/campaigns/client_launch_26/limited-number": func(r *http.Request) (int, string) {
+			hits++
+			return http.StatusOK, `{"hasNumber":true,"number":42,"createdAt":"2026-10-01T00:00:00Z"}`
+		},
+	})
+	launchSyncMu.Lock()
+	launchSyncLast = map[string]time.Time{}
+	launchSyncMu.Unlock()
+
+	if _, err := fetchCampaignStatus(cnAuth()); err != nil {
+		t.Fatalf("fetchCampaignStatus: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("limited-number hits = %d, want 1 (launch sync must fire after a status refresh)", hits)
+	}
+	// A second refresh inside the window must not re-fire (rate guard).
+	if _, err := fetchCampaignStatus(cnAuth()); err != nil {
+		t.Fatalf("fetchCampaignStatus 2: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("limited-number hits = %d after refresh, want 1 (window guard)", hits)
 	}
 }

@@ -28,6 +28,23 @@ dashboard.
   mutex prevents duplicate claims from racing browser tabs.
 - **Trial claim** — Global accounts can claim the one-time 250-credit expert
   trial pack from the panel.
+- **Output tag scrubbing (issue #30)** — the reasoning replay folds historical
+  `reasoning_content` into assistant content as `<thought>` blocks; models then
+  imitate that shape and open answers with raw `<thought>`/`<analysis>`/`<summary>`/
+  `think` blocks. A per-choice, cross-chunk state machine strips the LEADING run
+  on all three executor paths (streaming pump, sync aggregate, non-stream fold).
+  Conservative (the first real content byte ends scrubbing — HTML
+  `<details><summary>` and mid-answer tags are untouched) and fail-open
+  (unterminated block / divergence / 1 MB cap releases verbatim).
+- **Resilient billing path** — billing endpoints bypass the host HTTP bridge
+  (its default transport negotiates HTTP/2, which the codebuddy.ai APISIX
+  gateway drops mid-request with `EOF`) and run on HTTP/1.1 with a multi-source
+  dialer (system + DoH DNS cross-check, multi-IP fallback with dead-IP memory,
+  Linux MSS clamp). `proxy-url` from CPA `config.yaml` and the `HTTPS_PROXY`
+  environment variable are both honored.
+- **Split-channel build** — `-ldflags "-X main.providerName=codebuddy-intl"`
+  produces a per-variant plugin (own panel entry + auth namespace + pinned
+  login realm); the default build stays unified.
 - **Dashboard** — embedded panel at `/v0/resource/plugins/workbuddy/panel`
   with credits progress bars, plan badges, exhausted/disabled flags, region
   filter, and credential import.

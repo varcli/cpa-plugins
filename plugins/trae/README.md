@@ -15,6 +15,9 @@ CLIProxyAPI 的 Trae 统一 Provider 插件：**一个插件同时覆盖 Trae Co
 | **每日签到** | 面板手动签到（单账号/批量）+ 09:00 定时自动签到，走 `checkin_credits` |
 | **积分面板** | 账号卡片：昵称/积分/计划/签到状态/操作（签到/刷新/解冻），Intl 账号单独一栏 |
 | **自动保活** | 每日 03:00 刷新 access token，避免会话过期 |
+| **Intl 账单面** | Intl 账号积分走 `grow-normal.trae.ai` + `/trae/api/v1/pay/*`（此前 Intl 也走 CN 客户端，恒 401 `session_dead`）；float 容错换算，Intl 保持池中性、不发 CN 签到请求 |
+| **设备身份持久化** | Intl 登录/刷新持久化 `machineId`/`deviceId` 与设备密钥对（此前只存 `boundDeviceId`，`device_id_set` 为 false、`X-Device-Id` 为空） |
+| **面板积分条** | 积分条按计费变体正确渲染（含 credits 池），顶部刷新按钮实时拉取 |
 
 ## 安装
 

@@ -61,7 +61,7 @@ func credentialFileName(variant, uid string) string {
 
 // soloNamespacePrefix is the file-name prefix of the solo credential
 // namespace (also recognized by adopt.go's legacy claim logic).
-const soloNamespacePrefix = providerName + "-solo-"
+var soloNamespacePrefix = providerName + "-solo-"
 
 // migrateSoloFileNames moves v0.12.0-0.12.26 solo credentials written into
 // the shared `trae-<uid>.json` namespace into the solo namespace. Idempotent:

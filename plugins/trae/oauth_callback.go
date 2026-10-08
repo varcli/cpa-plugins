@@ -66,13 +66,13 @@ func parseLoginHostContext(request []byte) loginHostContext {
 // callback (registered in managementRegistration WITHOUT a Menu label: the
 // host skips Menu-less resources in its UI menu list, so the route is
 // reachable without adding a second sidebar entry).
-const resourceCallbackPath = "/v0/resource/plugins/" + providerName + "/oauth_callback"
+var resourceCallbackPath = "/v0/resource/plugins/" + providerName + "/oauth_callback"
 
 // resourceSubmitPath is the paste-to-complete fallback route (v0.12.16).
 // Referenced by start-login log guidance and intl Metadata — the previous
 // "resourceCallbackPath + \"_submit\"" spelling produced a non-existent
 // /oauth_callback_submit path in user-facing guidance.
-const resourceSubmitPath = "/v0/resource/plugins/" + providerName + "/oauth_submit"
+var resourceSubmitPath = "/v0/resource/plugins/" + providerName + "/oauth_submit"
 
 // resourceCallbackURL derives the browser-reachable callback URL from the
 // host's callback base URL: same scheme, host and port as the CPA server the

@@ -743,7 +743,13 @@ func runPack(args []string) error {
 	defer os.RemoveAll(buildDir)
 
 	libraryPath := filepath.Join(buildDir, *pluginID+extension)
-	buildCmd := exec.Command("go", "build", "-buildmode=c-shared", "-o", libraryPath, ".")
+	// -trimpath 去掉本机绝对路径 (可复现构建), -s -w 去符号表/调试信息
+	// (产物更小, 宿主装载更快)。二者都不改变导出符号, 不影响宿主 ABI。
+	buildCmd := exec.Command("go", "build",
+		"-buildmode=c-shared",
+		"-trimpath",
+		"-ldflags=-s -w",
+		"-o", libraryPath, ".")
 	buildCmd.Dir = pluginDir
 	buildCmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 	buildCmd.Stdout, buildCmd.Stderr = os.Stdout, os.Stderr

@@ -232,9 +232,6 @@ type traeAccount struct {
 	// v0.12.32: 凭证文件是否携带 deviceId。官方 claim 要求 x-device-id 携带
 	// 真实绑定 did，缺失时服务端可能静默不入账 —— 面板徽标告警用。
 	DeviceIDSet bool `json:"device_id_set"`
-	// v0.12.66: 本凭证的 deviceId，供面板与 bound_device_id 并排比对
-	// （不一致时用户可自行判断是否手工对齐）。设备指纹非密钥，管理面板可见。
-	DeviceID string `json:"device_id,omitempty"`
 	// v0.12.44: 凭证谱系 + CheckLogin 探测的服务端绑定设备状态。
 	Platform         string `json:"platform,omitempty"`           // platformId（trae_solo_cn 等）
 	BoundDeviceID    string `json:"bound_device_id,omitempty"`    // 服务端绑定的 deviceId
@@ -249,12 +246,12 @@ type traeCredits struct {
 	// wallet). v0.12.25: the check-in WALLET lives in checkin.credits
 	// (traeCheckin).
 	// v0.12.28: TotalRemain 改为上游用量模型值（fast 可用次数 / basic 剩余），
-	// 且 RemainKnown=false 时为 nil —— 未知剩余不再渲染成 0
-	// （"无可靠剩余时不猜测"：Free 显示 "免费剩余：--"）。
+	// 且 RemainKnown=false 时为 nil —— 未知剩余不再渲染成 0（对齐 cockpit-tools
+	// "无可靠剩余时不猜测"：Free 显示 "免费剩余：--"）。
 	TotalRemain *int64 `json:"total_remain"`
 	Plan        string `json:"plan"`
 	FetchedAt   string `json:"fetched_at,omitempty"`
-	// v0.12.28 用量模型扩展。
+	// v0.12.28 用量模型扩展（对齐 trae.ts TraeUsage）。
 	UsageModel  string `json:"usage_model,omitempty"` // fast|basic|unknown
 	RemainKnown bool   `json:"remain_known"`
 	Used        *int64 `json:"used,omitempty"`  // basic: 已用
@@ -320,7 +317,6 @@ func buildDashboard() map[string]any {
 		acct.Nickname = sa.Account.Nickname
 		acct.Variant = sa.Variant
 		acct.DeviceIDSet = strings.TrimSpace(sa.Auth.DeviceID) != ""
-		acct.DeviceID = sa.Auth.DeviceID
 		// v0.12.44: 凭证自证谱系 + 缓存的 CheckLogin 绑定快照。
 		acct.Platform = upstream.PlatformIDFor(sa.Variant)
 		if v, ok := accountCache.Load(f.AuthIndex); ok {
@@ -415,92 +411,6 @@ func handleCooldownRelease(req pluginapi.ManagementRequest) map[string]any {
 	}
 }
 
-// handleDeviceAlign v0.12.66 — 把凭证 auth.deviceId 对齐为服务端 CheckLogin
-// 报告的 BoundDeviceID。
-//
-// 背景：BoundDeviceID 是本账号在服务端的绑定设备指纹，只影响 ug/pay 族
-// （积分查询等）的请求画像；签到族请求自 v0.12.65 起一律发送每轮新生成的
-// 随机 16 位 x-device-id，与绑定值无关，故本操作不改变签到行为。
-//
-// 用途：从别处导入的凭证（如官方客户端导出）deviceId 与绑定值不一致时，
-// 手工对齐可让 ug/pay 族请求画像与绑定一致。
-//
-// 安全约束（按序执行，任一失败即中止）：
-//  1. 只接受 bound_device_id 由本服务 CheckLogin 实时取回，不接受调用方传入
-//     —— 防止任意改写凭证设备指纹；
-//  2. 拒绝空值与"服务端未报告绑定"（BoundDeviceID=""）的情况；
-//  3. 写入用 mergeAuthStorage（只覆盖 deviceId 等固定键，devicePublicKey /
-//     devicePrivateKey / exchangeResponse 等其余字段原样保留）。
-func handleDeviceAlign(req pluginapi.ManagementRequest) map[string]any {
-	var body struct {
-		AuthIndex string `json:"auth_index"`
-	}
-	if len(req.Body) > 0 {
-		_ = json.Unmarshal(req.Body, &body)
-	}
-	authIndex := strings.TrimSpace(body.AuthIndex)
-	if authIndex == "" {
-		return map[string]any{"success": false, "error": "auth_index required"}
-	}
-	sa, err := hostAuthGet(authIndex)
-	if err != nil {
-		return map[string]any{"success": false, "error": "load auth: " + err.Error()}
-	}
-	if upstream.IsIntlVariant(sa.Variant) {
-		return map[string]any{"success": false, "error": "Intl 账号不支持设备绑定对齐"}
-	}
-	a := hostAuthAsUpstream(sa)
-	// 服务端绑定值必须现取，不信任任何调用方输入。
-	cl, clErr := upstreamClient.CheckLogin(a)
-	if clErr != nil || cl == nil {
-		msg := "CheckLogin 探测失败，无法取得服务端绑定值"
-		if clErr != nil {
-			msg += ": " + clErr.Error()
-		}
-		return map[string]any{"success": false, "error": msg}
-	}
-	bound := strings.TrimSpace(cl.BoundDeviceID)
-	if bound == "" {
-		return map[string]any{"success": false, "error": "服务端未报告绑定设备（BoundDeviceID 为空），无法对齐"}
-	}
-	if bound == strings.TrimSpace(a.DeviceID) {
-		return map[string]any{"success": true, "aligned": false, "device_id": bound, "message": "已一致，无需修改"}
-	}
-	old := a.DeviceID
-	a.DeviceID = bound
-	// 取原始凭证字节做 merge（保留设备密钥对与 parity 字段）。
-	raw, rawErr := hostAuthGetRaw(authIndex)
-	if rawErr != nil {
-		return map[string]any{"success": false, "error": "load raw auth: " + rawErr.Error()}
-	}
-	name := credentialFileName(a.Variant, a.UID)
-	if files, listErr := hostAuthList(); listErr == nil {
-		for _, f := range files {
-			if f.AuthIndex == authIndex {
-				if n := strings.TrimSpace(f.Name); n != "" {
-					name = n
-				}
-				break
-			}
-		}
-	}
-	if errSave := hostAuthSave(name, mergeAuthStorage(raw, a)); errSave != nil {
-		return map[string]any{"success": false, "error": "persist: " + errSave.Error()}
-	}
-	log.Printf("device-align uid=%s: deviceId %q -> %q (服务端绑定值), file=%s", a.UID, old, bound, name)
-	// 失效该账号的绑定快照缓存，下一次 /credits 重新探测即可显示"匹配"。
-	accountCache.Delete(authIndex)
-	return map[string]any{
-		"success":    true,
-		"aligned":    true,
-		"device_id":  bound,
-		"previous":   old,
-		"auth_index": authIndex,
-		"file":       name,
-		"message":    "凭证 deviceId 已对齐为服务端绑定值；积分查询等 ug/pay 族请求画像随之下次请求生效。签到行为不变。",
-	}
-}
-
 // -----------------------------------------------------------------------------
 // host auth bridge (host.auth.list / host.auth.get)
 // -----------------------------------------------------------------------------
@@ -563,6 +473,14 @@ type storedTokens struct {
 	MachineID    string `json:"machineId"`
 	DeviceID     string `json:"deviceId"`
 	Variant      string `json:"variant"`
+	// Region is intl-only (auth.region, e.g. "US-East") — feeds X-User-Region
+	// on the intl pay face (intl_pay.go).
+	Region string `json:"region"`
+	// BoundDeviceID mirrors the credential-parity extra auth.boundDeviceId
+	// (issue #29 field report): intl logins before v0.12.72 persisted the
+	// OAuth-bound device id ONLY under this key — auth.deviceId was absent,
+	// so device_id_set surfaced false. Read as the DeviceID fallback.
+	BoundDeviceID string `json:"boundDeviceId"`
 }
 
 type storedAccount struct {
@@ -600,6 +518,13 @@ func hostAuthGet(authIndex string) (*storedAuth, error) {
 // hostAuthAsUpstream converts the host-stored nested shape into the upstream
 // *auth.Auth the trae-solo-cn upstream client expects.
 func hostAuthAsUpstream(sa *storedAuth) *auth.Auth {
+	deviceID := sa.Auth.DeviceID
+	if deviceID == "" {
+		// v0.12.72 (issue #29 field report): legacy intl files carry the bound
+		// device id only under auth.boundDeviceId — fall back so device_id_set
+		// reflects reality and X-Device-Id headers carry the bound id.
+		deviceID = sa.Auth.BoundDeviceID
+	}
 	return &auth.Auth{
 		AccessToken:  sa.Auth.AccessToken,
 		RefreshToken: sa.Auth.RefreshToken,
@@ -607,12 +532,26 @@ func hostAuthAsUpstream(sa *storedAuth) *auth.Auth {
 		Domain:       sa.Auth.Domain,
 		APIHost:      sa.Auth.APIHost,
 		MachineID:    sa.Auth.MachineID,
-		DeviceID:     sa.Auth.DeviceID,
+		DeviceID:     deviceID,
 		UID:          sa.Account.UID,
 		EnterpriseID: sa.Account.EnterpriseID,
 		Nickname:     sa.Account.Nickname,
 		Variant:      sa.Variant,
 	}
+}
+
+// isIntlStoredAuth reports whether the account lives on the intl realm and
+// therefore must use the intl faces (chat via intlupstream, billing via
+// intl_pay.go's grow-normal.trae.ai + v1) instead of the CN ones.
+func isIntlStoredAuth(sa *storedAuth) bool {
+	if sa == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(sa.Variant), "intl") {
+		return true
+	}
+	d := strings.ToLower(strings.TrimSpace(sa.Auth.Domain))
+	return d == "trae.ai" || d == "marscode.com" || strings.HasSuffix(d, ".trae.ai")
 }
 
 // -----------------------------------------------------------------------------
@@ -747,13 +686,13 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 		entry["nickname"] = sa.Account.Nickname
 		a := hostAuthAsUpstream(sa)
 		// v0.12.32: 官方客户端 claim 要求 x-device-id 携带真实绑定的数字 did
-		// （did 缺失/未绑定时服务端可能 code=0 但静默不入账）。
-		// 导入的账号文件可能缺 deviceId ——
+		// （BlueChonk 逆向报告 FINDINGS §四/§五；did 缺失/未绑定时服务端
+		// 可能 code=0 但静默不入账）。导入的账号文件可能缺 deviceId ——
 		// 透出诊断，别让"签到成功但不到账"隐形。
 		entry["device_id_set"] = strings.TrimSpace(a.DeviceID) != ""
 		if strings.TrimSpace(a.DeviceID) == "" {
 			// v0.12.43: 从"告警后硬签"改为硬性拦截 —— 官方 claim 要求
-			// x-device-id（缺失时服务端可能 code=0 但
+			// x-device-id（FINDINGS §四/§五：缺失时服务端可能 code=0 但
 			// 静默不入账），硬签只会产生"成功但不到账"的假结果。给出
 			// 可行动的修复路径；账号仍在面板展示，重新登录即可补齐。
 			entry["error"] = "缺少 deviceId：官方 claim 要求 x-device-id（真实绑定 did），凭证缺设备身份，硬签可能成功但不入账 —— 请用插件 OAuth 重新登录该账号补齐后再签"
@@ -953,6 +892,9 @@ func quotaExhaustedKnown(sum upstream.UsageSummary) bool {
 // handleCreditsQuery fetches live credits from upstream for one (auth_index)
 // or all accounts. Updates the cache so the next /accounts reflects the new
 // numbers.
+// v0.12.70: per-account body extracted into refreshAccountCredits —
+// handleRefresh (top-bar 刷新) runs the same live path so the returned
+// dashboard carries fresh numbers instead of a stale cache projection.
 func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 	// Read auth_index from query string (?auth_index=xxx) first, then body JSON.
 	// panel.html uses GET /credits?auth_index=xxx, so req.Query is the primary source.
@@ -977,187 +919,13 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 		if authIndex != "" && f.AuthIndex != authIndex {
 			continue
 		}
-		entry := map[string]any{"auth_index": f.AuthIndex, "uid": "", "nickname": ""}
 		sa, err := hostAuthGet(f.AuthIndex)
 		if err != nil {
-			entry["error"] = "load auth: " + err.Error()
-			results = append(results, entry)
+			results = append(results, map[string]any{"auth_index": f.AuthIndex, "uid": "", "nickname": "", "error": "load auth: " + err.Error()})
 			continue
 		}
-		entry["uid"] = sa.Account.UID
-		entry["nickname"] = sa.Account.Nickname
 		a := hostAuthAsUpstream(sa)
-		usage, err := upstreamClient.UserEntUsage(a)
-		if err != nil {
-			entry["error"] = "ent_usage: " + err.Error()
-			results = append(results, entry)
-			continue
-		}
-		// v0.12.28: 套餐剩余用量模型：
-		//   fast  → 速通可用次数（-1 无限）
-		//   basic → 选中包 basic_usage_limit - basic_usage_amount（含 bonus）
-		//   unknown → 剩余不可知（面板显示 "--"；旧代码读不存在的
-		//             credits_limit 字段把这里渲染成"剩余 0 积分 · 00%"）。
-		sum := upstream.SummarizeUsage(usage.UserEntitlementPackList, true)
-		// v0.12.34: 官方 cashier 同口径积分池（Σ max(credits_limit-usage,0)，
-		// -1 不限）。这是模型调用真正扣减的池子——此前把签到钱包当
-		// "剩余积分"展示，与官方数字对不上（用户实测反馈）。
-		sum.CreditsPool = upstream.CreditsPoolUsage(usage.UserEntitlementPackList, usage.IsCreditsBilling)
-		selected := upstream.SelectActivePack(usage.UserEntitlementPackList, true)
-		plan := "Unknown"
-		if selected != nil {
-			// 上游 identityStr 优先取选中包 display_desc，回退 product_type 映射。
-			if d := strings.TrimSpace(selected.DisplayDesc); d != "" {
-				plan = d
-			} else {
-				plan = upstream.ProductTypeIdentity(selected.EntitlementBaseInfo.ProductType, true)
-			}
-		}
-		// v0.12.29: ide_user_pay_status —— 上游刷新链路的第二个数据源
-		// （先 pay_status 再 ent_usage）。Free CN/SOLO
-		// 的 ent_usage pack 里没有可解析 quota，剩余维度（快请求/月、SOLO 并发）
-		// 只在 pay_status 的 detail/quota 里。best-effort：失败不阻塞 credits。
-		if ps, psErr := upstreamClient.PayStatus(a); psErr == nil && ps.Code == 0 {
-			sum.FastRequestPer = ps.FastRequestPer()
-			sum.SoloParallel = ps.SoloParallelLimit()
-			sum.SoloPackage = ps.HasSoloPackage()
-			sum.PlanType = ps.PlanIdentity()
-			// 选中包缺失时回退 user_pay_identity_str 作为计划显示
-			// （上游 account.plan_type 即来自这里）。
-			if selected == nil {
-				if id := ps.PlanIdentity(); id != "" {
-					plan = id
-				}
-			}
-		}
-		// v0.12.44: CheckLogin —— 登录态 + 服务端绑定设备探测（best-effort，
-		// 刷新链路亦如此）。
-		// v0.12.66 归因修正：v0.12.65 起签到族请求一律携带每轮新生成的随机
-		// 16 位 x-device-id（upstream.NewCheckinDeviceID），既不发送服务端绑定值
-		// 也不发送本凭证 deviceId —— BoundDeviceID 与本账号 deviceId 不一致
-		// 不再预示签到 9074，仅为 ug/pay 族请求画像的诊断信息（面板标黄）。
-		// IsLogin=false 才是签到相关的硬信号（面板标红）。
-		bind := &bindStatus{}
-		if cl, clErr := upstreamClient.CheckLogin(a); clErr == nil && cl != nil {
-			bind.Known = true
-			bind.IsLogin = cl.IsLogin
-			bind.BoundDeviceID = cl.BoundDeviceID
-			bind.DeviceBindStatus = cl.DeviceBindStatus
-			bind.DeviceMatch = cl.BoundDeviceID != "" && cl.BoundDeviceID == a.DeviceID
-			entry["is_login"] = cl.IsLogin
-			if cl.BoundDeviceID != "" {
-				entry["bound_device_id"] = cl.BoundDeviceID
-				entry["device_bind_status"] = cl.DeviceBindStatus
-				entry["device_match"] = bind.DeviceMatch
-			}
-			// v0.12.66: 日志分级。绑定值不一致自 v0.12.65 起与签到无关（签到族
-			// 一律发送每轮新生成的随机 16 位 x-device-id，见
-			// upstream.NewCheckinDeviceID），故不再套用"9074 高危"措辞，只作诊断；
-			// 真正影响签到的是登录态失效。
-			if !cl.IsLogin {
-				log.Printf("checkin device-bind warning uid=%s: CheckLogin 报告登录态失效 — 建议面板退出重新登录", sa.Account.UID)
-			} else if cl.DeviceBindStatus != "" && cl.DeviceBindStatus != "BOUND" || (cl.BoundDeviceID != "" && cl.BoundDeviceID != a.DeviceID) {
-				log.Printf("checkin device-bind note uid=%s: bindStatus=%q bound=%q local=%q — 仅影响 ug/pay 族请求画像，不影响签到", sa.Account.UID, cl.DeviceBindStatus, cl.BoundDeviceID, a.DeviceID)
-			}
-		} else if clErr != nil {
-			entry["checklogin_error"] = clErr.Error()
-		}
-		entry["usage_model"] = sum.UsageModel
-		entry["remain_known"] = sum.RemainKnown
-		if sum.RemainKnown {
-			entry["total_remain"] = sum.Remain
-		} else {
-			entry["total_remain"] = 0 // 向后兼容；remain_known=false 时面板显示 "--"
-		}
-		entry["plan"] = plan
-		// v0.12.34: 积分池透出（面板"剩余积分"对齐官方口径）。
-		entry["credits_pool_known"] = sum.CreditsPool.Known
-		if sum.CreditsPool.Known {
-			entry["credits_pool_remain"] = sum.CreditsPool.Remain
-			entry["credits_pool_unlimited"] = sum.CreditsPool.Unlimited
-		}
-		if sum.UsageModel == "basic" {
-			entry["used"] = sum.Used
-			entry["total"] = sum.Total
-		}
-		if sum.UsageModel == "fast" {
-			entry["fast_limit"] = sum.FastLimit
-			entry["fast_used"] = sum.FastUsed
-		}
-		// v0.12.29: pay_status 补充维度透传（面板"快请求/月 / Solo 并发"）。
-		if sum.FastRequestPer != nil {
-			entry["fast_request_per"] = *sum.FastRequestPer
-		}
-		if sum.SoloParallel != nil {
-			entry["solo_parallel"] = *sum.SoloParallel
-		}
-		if sum.SoloPackage {
-			entry["solo_package"] = true
-		}
-		if sum.PlanType != "" {
-			entry["plan_type"] = sum.PlanType
-		}
-		// v0.12.25: also fetch the CHECK-IN status. v0.12.40: credits 语义
-		// 修正——它是签到奖励数额（非钱包），仅作展示与"已签"判定，不再
-		// 计入池子评分/可花余额。
-		wallet := int64(-1)
-		checkedIn, enable := false, false
-		if st, stErr := upstreamClient.CheckinStatus(a); stErr == nil {
-			wallet = st.Credits
-			checkedIn, enable = st.CheckedIn || st.DidCheckedIn, st.Enable
-		} else {
-			entry["checkin_status_error"] = stErr.Error()
-		}
-		if wallet >= 0 {
-			entry["checkin_credits"] = wallet
-			entry["checked_in"] = checkedIn
-		}
-		// Update cache + pool. e.credits stays pack-only (legacy field); the
-		// reward lives in e.checkin.Credits. v0.12.40: pool score = usage
-		// remain / credits pool only — the reward config is not spendable.
-		scoreRemain := int64(0)
-		if sum.RemainKnown {
-			scoreRemain = sum.Remain
-			if scoreRemain < 0 { // unlimited
-				scoreRemain = 1 << 30
-			}
-		}
-		if sum.CreditsPool.Known { // v0.12.34: 积分池参与池子评分
-			pr := sum.CreditsPool.Remain
-			if pr < 0 {
-				pr = 1 << 30
-			}
-			if pr > scoreRemain {
-				scoreRemain = pr
-			}
-		}
-		accountCache.Store(f.AuthIndex, &accountCacheEntry{
-			credits:     scoreRemain,
-			checkin:     &checkinStatus{CheckedIn: checkedIn, Credits: wallet, Enable: enable},
-			fetched:     time.Now(),
-			usage:       sum,
-			usageFilled: true,
-			plan:        plan,
-			bind:        bind,
-		})
-		// v0.12.64: fold the pool snapshot into the usage ledger so the
-		// credential-card usage note reports 标准额度 without upstream calls.
-		// trae exposes no reset-window bounds → the note shows the no-window
-		// fallback until one can be parsed.
-		usageQuotaStampFromSummary(f.AuthIndex, sum)
-		if accountPool != nil {
-			// v0.12.40: 不再叠加奖励配置（wallet 变量名保留为历史语义，
-			// 现含义 = 签到奖励数额）。
-			accountPool.SetCredits(sa.Account.UID, scoreRemain)
-			// v0.12.66: 已知来源全为 0（至少一个已知）→ 主动冷却到
-			// 次日 0 点，不再等下一次调用撞 402/4008 才被动冷却。
-			if quotaExhaustedKnown(sum) {
-				accountPool.Cooldown(sa.Account.UID, pool.CoolPlan,
-					pool.UntilNextMidnight(),
-					"credits exhausted (0) — resumes at local midnight")
-			}
-		}
-		results = append(results, entry)
+		results = append(results, refreshAccountCredits(f, sa, a))
 	}
 	return map[string]any{
 		"provider":    providerName,
@@ -1166,6 +934,245 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 	}
 }
 
+// refreshAccountCredits performs the live per-account credits query
+// (ent_usage + credits pool + pay_status + CheckLogin + checkin status),
+// stores the snapshot into accountCache / accountPool and returns the
+// result entry for the caller's results array.
+//
+// v0.12.70: extracted from handleCreditsQuery so handleRefresh can run the
+// exact same live path. The top-bar 刷新 used to swap tokens only and then
+// render buildDashboard() from the stale accountCache snapshot — the panel
+// toast said 数据已刷新 while the credit bar kept showing old numbers
+// (user-reported as 刷新显示有 bug). Callers pass the already-loaded
+// storedAuth/upstream auth; token-refresh failures are the caller's
+// decision to skip (same dead token would just fail upstream again).
+func refreshAccountCredits(f pluginapi.HostAuthFileEntry, sa *storedAuth, a *auth.Auth) map[string]any {
+	entry := map[string]any{"auth_index": f.AuthIndex, "uid": sa.Account.UID, "nickname": sa.Account.Nickname}
+	// v0.12.72 (issue #29 field report): intl accounts live on a DIFFERENT
+	// billing face (grow-normal.trae.ai + /trae/api/v1/pay/*). Driving them
+	// through the CN client surfaced "ent_usage: upstream session_dead (http
+	// 401) code 4014" for every intl account. Route by realm.
+	if isIntlStoredAuth(sa) {
+		return refreshAccountCreditsIntl(f, sa, entry)
+	}
+	usage, err := upstreamClient.UserEntUsage(a)
+	if err != nil {
+		entry["error"] = "ent_usage: " + err.Error()
+		return entry
+	}
+	sum, plan, selected := summarizeEntUsage(usage, true)
+	// v0.12.29: ide_user_pay_status —— 上游刷新链路的第二个数据源
+	// （trae_account_core_refresh.rs 先 pay_status 再 ent_usage）。Free CN/SOLO
+	// 的 ent_usage pack 里没有可解析 quota，剩余维度（快请求/月、SOLO 并发）
+	// 只在 pay_status 的 detail/quota 里。best-effort：失败不阻塞 credits。
+	if ps, psErr := upstreamClient.PayStatus(a); psErr == nil && ps.Code == 0 {
+		sum.FastRequestPer = ps.FastRequestPer()
+		sum.SoloParallel = ps.SoloParallelLimit()
+		sum.SoloPackage = ps.HasSoloPackage()
+		sum.PlanType = ps.PlanIdentity()
+		// 选中包缺失时回退 user_pay_identity_str 作为计划显示
+		// （上游 account.plan_type 即来自这里）。
+		if selected == nil {
+			if id := ps.PlanIdentity(); id != "" {
+				plan = id
+			}
+		}
+	}
+	// v0.12.44: CheckLogin —— 登录态 + 服务端绑定设备探测（best-effort，
+	// cockpit-tools 刷新链路同款，trae_account_core_refresh.rs:1035-1045）。
+	// BoundDeviceID 与本账号 deviceId 不一致 / DeviceBindStatus != BOUND /
+	// IsLogin=false → 签到风控高危（9074 高危画像），日志告警 + 面板亮标。
+	bind := &bindStatus{}
+	if cl, clErr := upstreamClient.CheckLogin(a); clErr == nil && cl != nil {
+		bind.Known = true
+		bind.IsLogin = cl.IsLogin
+		bind.BoundDeviceID = cl.BoundDeviceID
+		bind.DeviceBindStatus = cl.DeviceBindStatus
+		bind.DeviceMatch = cl.BoundDeviceID != "" && cl.BoundDeviceID == a.DeviceID
+		entry["is_login"] = cl.IsLogin
+		if cl.BoundDeviceID != "" {
+			entry["bound_device_id"] = cl.BoundDeviceID
+			entry["device_bind_status"] = cl.DeviceBindStatus
+			entry["device_match"] = bind.DeviceMatch
+		}
+		if !cl.IsLogin || (cl.DeviceBindStatus != "" && cl.DeviceBindStatus != "BOUND") || (cl.BoundDeviceID != "" && cl.BoundDeviceID != a.DeviceID) {
+			log.Printf("checkin device-bind warning uid=%s: isLogin=%v bindStatus=%q bound=%q local=%q — 绑定不一致为 9074 风控高危，建议面板退出重新登录以重绑设备", sa.Account.UID, cl.IsLogin, cl.DeviceBindStatus, cl.BoundDeviceID, a.DeviceID)
+		}
+	} else if clErr != nil {
+		entry["checklogin_error"] = clErr.Error()
+	}
+	// v0.12.25: also fetch the CHECK-IN status (CN face only — the intl realm
+	// has no check-in endpoints; refreshAccountCreditsIntl passes zero values
+	// and skips this). v0.12.40: credits 语义修正——它是签到奖励数额（非钱包），
+	// 仅作展示与"已签"判定，不再计入池子评分/可花余额。
+	wallet := int64(-1)
+	checkedIn, enable := false, false
+	if st, stErr := upstreamClient.CheckinStatus(a); stErr == nil {
+		wallet = st.Credits
+		checkedIn, enable = st.CheckedIn || st.DidCheckedIn, st.Enable
+	} else {
+		entry["checkin_status_error"] = stErr.Error()
+	}
+	// Shared tail: entry projection + cache/pool snapshot (pool-eligible).
+	return finalizeAccountCredits(f, sa, entry, sum, plan, bind, wallet, checkedIn, enable, true)
+}
+
+// summarizeEntUsage builds the panel/cache usage summary, plan label and
+// selected pack from an ent_usage snapshot (v0.12.28/34 semantics, shared
+// CN/Intl).
+func summarizeEntUsage(usage *upstream.EntUsageResult, isCN bool) (upstream.UsageSummary, string, *upstream.EntitlementPack) {
+	// v0.12.28: 套餐剩余对齐 cockpit-tools 的用量模型（trae.ts）：
+	//   fast  → 速通可用次数（-1 无限）
+	//   basic → 选中包 basic_usage_limit - basic_usage_amount（含 bonus）
+	//   unknown → 剩余不可知（面板显示 "--"；旧代码读不存在的
+	//             credits_limit 字段把这里渲染成"剩余 0 积分 · 00%"）。
+	sum := upstream.SummarizeUsage(usage.UserEntitlementPackList, isCN)
+	// v0.12.34: 官方 cashier 同口径积分池（Σ max(credits_limit-usage,0)，
+	// -1 不限）。这是模型调用真正扣减的池子——此前把签到钱包当
+	// "剩余积分"展示，与官方数字对不上（用户实测反馈）。
+	sum.CreditsPool = upstream.CreditsPoolUsage(usage.UserEntitlementPackList, usage.IsCreditsBilling)
+	selected := upstream.SelectActivePack(usage.UserEntitlementPackList, isCN)
+	plan := "Unknown"
+	if selected != nil {
+		// 上游 identityStr 优先取选中包 display_desc，回退 product_type 映射。
+		if d := strings.TrimSpace(selected.DisplayDesc); d != "" {
+			plan = d
+		} else {
+			plan = upstream.ProductTypeIdentity(selected.EntitlementBaseInfo.ProductType, true)
+		}
+	}
+	return sum, plan, selected
+}
+
+// finalizeAccountCredits projects the usage summary onto the management entry
+// and stores the accountCache (+ optionally accountPool) snapshot. Shared by
+// the CN/SOLO and Intl data paths (v0.12.72 extraction — behavior-preserving
+// for CN/SOLO).
+func finalizeAccountCredits(f pluginapi.HostAuthFileEntry, sa *storedAuth, entry map[string]any, sum upstream.UsageSummary, plan string, bind *bindStatus, wallet int64, checkedIn, enable, poolEligible bool) map[string]any {
+	entry["usage_model"] = sum.UsageModel
+	entry["remain_known"] = sum.RemainKnown
+	if sum.RemainKnown {
+		entry["total_remain"] = sum.Remain
+	} else {
+		entry["total_remain"] = 0 // 向后兼容；remain_known=false 时面板显示 "--"
+	}
+	entry["plan"] = plan
+	// v0.12.34: 积分池透出（面板"剩余积分"对齐官方口径）。
+	entry["credits_pool_known"] = sum.CreditsPool.Known
+	if sum.CreditsPool.Known {
+		entry["credits_pool_remain"] = sum.CreditsPool.Remain
+		entry["credits_pool_unlimited"] = sum.CreditsPool.Unlimited
+	}
+	if sum.UsageModel == "basic" {
+		entry["used"] = sum.Used
+		entry["total"] = sum.Total
+	}
+	if sum.UsageModel == "fast" {
+		entry["fast_limit"] = sum.FastLimit
+		entry["fast_used"] = sum.FastUsed
+	}
+	// v0.12.29: pay_status 补充维度透传（面板"快请求/月 / Solo 并发"）。
+	if sum.FastRequestPer != nil {
+		entry["fast_request_per"] = *sum.FastRequestPer
+	}
+	if sum.SoloParallel != nil {
+		entry["solo_parallel"] = *sum.SoloParallel
+	}
+	if sum.SoloPackage {
+		entry["solo_package"] = true
+	}
+	if sum.PlanType != "" {
+		entry["plan_type"] = sum.PlanType
+	}
+	if wallet >= 0 {
+		entry["checkin_credits"] = wallet
+		entry["checked_in"] = checkedIn
+	}
+	// Update cache + pool. e.credits stays pack-only (legacy field); the
+	// reward lives in e.checkin.Credits. v0.12.40: pool score = usage
+	// remain / credits pool only — the reward config is not spendable.
+	scoreRemain := int64(0)
+	if sum.RemainKnown {
+		scoreRemain = sum.Remain
+		if scoreRemain < 0 { // unlimited
+			scoreRemain = 1 << 30
+		}
+	}
+	if sum.CreditsPool.Known { // v0.12.34: 积分池参与池子评分
+		pr := sum.CreditsPool.Remain
+		if pr < 0 {
+			pr = 1 << 30
+		}
+		if pr > scoreRemain {
+			scoreRemain = pr
+		}
+	}
+	accountCache.Store(f.AuthIndex, &accountCacheEntry{
+		credits:     scoreRemain,
+		checkin:     &checkinStatus{CheckedIn: checkedIn, Credits: wallet, Enable: enable},
+		fetched:     time.Now(),
+		usage:       sum,
+		usageFilled: true,
+		plan:        plan,
+		bind:        bind,
+	})
+	// v0.12.64: fold the pool snapshot into the usage ledger so the
+	// credential-card usage note reports 标准额度 without upstream calls.
+	// trae exposes no reset-window bounds → the note shows the no-window
+	// fallback until one can be parsed.
+	usageQuotaStampFromSummary(f.AuthIndex, sum)
+	// v0.12.72: pool mutations stay CN/SOLO-only (poolEligible) — the
+	// scheduler pool semantics are CN-tuned and intl chat routing does not
+	// flow through it.
+	if poolEligible && accountPool != nil {
+		// v0.12.40: 不再叠加奖励配置（wallet 变量名保留为历史语义，
+		// 现含义 = 签到奖励数额）。
+		accountPool.SetCredits(sa.Account.UID, scoreRemain)
+		// v0.12.66: 已知来源全为 0（至少一个已知）→ 主动冷却到
+		// 次日 0 点，不再等下一次调用撞 402/4008 才被动冷却。
+		if quotaExhaustedKnown(sum) {
+			accountPool.Cooldown(sa.Account.UID, pool.CoolPlan,
+				pool.UntilNextMidnight(),
+				"credits exhausted (0) — resumes at local midnight")
+		}
+	}
+	return entry
+}
+
+// refreshAccountCreditsIntl is the intl-realm data path (v0.12.72, issue #29
+// field report): ent_usage + pay_status on the intl pay face (intl_pay.go —
+// grow-normal.trae.ai + /trae/api/v1/pay/*). No check-in / CheckLogin: those
+// are CN-face endpoints and upstream 404s/401s them on intl. The cache
+// snapshot stays pool-neutral (poolEligible=false).
+func refreshAccountCreditsIntl(f pluginapi.HostAuthFileEntry, sa *storedAuth, entry map[string]any) map[string]any {
+	deviceID := sa.Auth.DeviceID
+	if deviceID == "" {
+		deviceID = sa.Auth.BoundDeviceID
+	}
+	usageResp, err := intlEntUsage(sa.Auth.AccessToken, sa.Auth.Region, deviceID)
+	if err != nil {
+		entry["error"] = "intl ent_usage: " + err.Error()
+		return entry
+	}
+	usage := usageResp.toCNResult()
+	sum, plan, selected := summarizeEntUsage(usage, false)
+	// pay_status v1 — best-effort, same summary fields as the CN face.
+	if raw, psErr := intlPayStatusRaw(sa.Auth.AccessToken, sa.Auth.Region, deviceID); psErr == nil {
+		var ps upstream.PayStatusResult
+		if json.Unmarshal(raw, &ps) == nil && ps.Code == 0 {
+			sum.FastRequestPer = ps.FastRequestPer()
+			sum.SoloParallel = ps.SoloParallelLimit()
+			sum.SoloPackage = ps.HasSoloPackage()
+			sum.PlanType = ps.PlanIdentity()
+			if selected == nil && ps.PlanIdentity() != "" {
+				plan = ps.PlanIdentity()
+			}
+		}
+	}
+	entry["variant"] = "intl"
+	// No check-in on intl: wallet=-1 keeps checkin fields out of the entry.
+	return finalizeAccountCredits(f, sa, entry, sum, plan, &bindStatus{}, -1, false, false, false)
+}
 func max64(a, b int64) int64 {
 	if a > b {
 		return a
@@ -1201,6 +1208,22 @@ func handleRefresh() map[string]any {
 			continue
 		}
 		entry["refreshed"] = refreshed
+		// v0.12.70: 顶部「刷新」此前只刷 token，返回的 dashboard 仍从
+		// accountCache 投影 —— toast 报「数据已刷新」而积分条纹丝不动
+		// （用户报告的刷新显示 bug）。token 刷新成功后走 /credits 同款实拉
+		// 链路（refreshAccountCredits），快照与结果一并保鲜；实拉失败不
+		// 掩盖 token 刷新结果，单独落 credits_error 诊断字段。
+		ce := refreshAccountCredits(f, sa, a)
+		for ck, cv := range ce {
+			switch ck {
+			case "auth_index", "uid", "nickname":
+				// entry 已带，保持不变
+			case "error":
+				entry["credits_error"] = cv
+			default:
+				entry[ck] = cv
+			}
+		}
 		results = append(results, entry)
 	}
 	return map[string]any{
@@ -1346,9 +1369,79 @@ func persistRefreshedAuth(req pluginapi.ExecutorRequest, a *auth.Auth) {
 	}
 }
 
+func handleDeviceAlign(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		AuthIndex string `json:"auth_index"`
+	}
+	if len(req.Body) > 0 {
+		_ = json.Unmarshal(req.Body, &body)
+	}
+	authIndex := strings.TrimSpace(body.AuthIndex)
+	if authIndex == "" {
+		return map[string]any{"success": false, "error": "auth_index required"}
+	}
+	sa, err := hostAuthGet(authIndex)
+	if err != nil {
+		return map[string]any{"success": false, "error": "load auth: " + err.Error()}
+	}
+	if upstream.IsIntlVariant(sa.Variant) {
+		return map[string]any{"success": false, "error": "Intl 账号不支持设备绑定对齐"}
+	}
+	a := hostAuthAsUpstream(sa)
+	// 服务端绑定值必须现取，不信任任何调用方输入。
+	cl, clErr := upstreamClient.CheckLogin(a)
+	if clErr != nil || cl == nil {
+		msg := "CheckLogin 探测失败，无法取得服务端绑定值"
+		if clErr != nil {
+			msg += ": " + clErr.Error()
+		}
+		return map[string]any{"success": false, "error": msg}
+	}
+	bound := strings.TrimSpace(cl.BoundDeviceID)
+	if bound == "" {
+		return map[string]any{"success": false, "error": "服务端未报告绑定设备（BoundDeviceID 为空），无法对齐"}
+	}
+	if bound == strings.TrimSpace(a.DeviceID) {
+		return map[string]any{"success": true, "aligned": false, "device_id": bound, "message": "已一致，无需修改"}
+	}
+	old := a.DeviceID
+	a.DeviceID = bound
+	// 取原始凭证字节做 merge（保留设备密钥对与 parity 字段）。
+	raw, rawErr := hostAuthGetRaw(authIndex)
+	if rawErr != nil {
+		return map[string]any{"success": false, "error": "load raw auth: " + rawErr.Error()}
+	}
+	name := credentialFileName(a.Variant, a.UID)
+	if files, listErr := hostAuthList(); listErr == nil {
+		for _, f := range files {
+			if f.AuthIndex == authIndex {
+				if n := strings.TrimSpace(f.Name); n != "" {
+					name = n
+				}
+				break
+			}
+		}
+	}
+	if errSave := hostAuthSave(name, mergeAuthStorage(raw, a)); errSave != nil {
+		return map[string]any{"success": false, "error": "persist: " + errSave.Error()}
+	}
+	log.Printf("device-align uid=%s: deviceId %q -> %q (服务端绑定值), file=%s", a.UID, old, bound, name)
+	// 失效该账号的绑定快照缓存，下一次 /credits 重新探测即可显示"匹配"。
+	accountCache.Delete(authIndex)
+	return map[string]any{
+		"success":    true,
+		"aligned":    true,
+		"device_id":  bound,
+		"previous":   old,
+		"auth_index": authIndex,
+		"file":       name,
+		"message":    "凭证 deviceId 已对齐为服务端绑定值；积分查询等 ug/pay 族请求画像随之下次请求生效。签到行为不变。",
+	}
+}
+
 // handleImportAuth imports a Trae credential JSON (nested or flat) into the
 // host auth store. Body: {"json": <raw json>} or {"raw": "<json string>"}.
-// This lets users paste a token from another tool
+// This lets users paste a token from another tool (e.g. traework2api login.sh)
 // without going through the browser OAuth flow.
 func handleImportAuth(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {

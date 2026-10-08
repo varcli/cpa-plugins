@@ -72,7 +72,6 @@ import (
 )
 
 const (
-	providerName  = "qoder"
 	authFileName  = "qoder.json"
 	pluginLogoURL = "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/QoderWork.png"
 	// Qoder CN: OpenAPI for auth/billing, gateway for COSY-signed inference.
@@ -126,6 +125,18 @@ var (
 	httpClientOnce sync.Once
 	sharedClient   *http.Client
 )
+
+// pluginVersionLiteral is the single `Version: "x.y.z"` literal the release
+// tooling rewrites (scripts/release.go globs plugins/<id>/*.go at the top
+// level only, and requires exactly one match). The registration self-reports
+// `version`, which mirrors this literal, so the built plugin can never drift
+// from the version the manifest was bumped to.
+var pluginVersionLiteral = struct {
+	Version string
+}{Version: "0.7.0"}
+
+// version is what the plugin self-reports to the host.
+var version = pluginVersionLiteral.Version
 
 // loginStatesPruneInterval bounds how often the janitor sweeps abandoned
 // login states (user started a login but never finished).
@@ -346,12 +357,18 @@ type registrationCapability struct {
 	UsagePlugin           bool                         `json:"usage_plugin"`
 }
 
+// providerName is a VAR (split flavor, issue #29): the unified build keeps
+// the default "qoder"; the split-channel builds rename it via
+// -ldflags "-X main.providerName=qoder-intl" so the plugin registers as its
+// own panel entry / auth-file namespace. See split_build.go.
+var providerName = "qoder"
+
 func wbRegistration() registration {
 	return registration{
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             providerName,
-			Version:          "0.7.0",
+			Version:          version,
 			Author:           "varcli",
 			GitHubRepository: "https://github.com/varcli/cpa-plugins",
 			Logo:             pluginLogoURL,
@@ -624,6 +641,10 @@ func handleParseAuth(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
+	// HostConfigSummary arrives with every parse callback (startup scan and
+	// panel import). Cache the configured proxy URL so the direct HTTP path
+	// honors config.yaml proxy-url — the bridge bypass dropped that policy.
+	rememberHostProxy(req.Host.ProxyURL)
 	// Ownership check (CPA native contract): the host routes by the file's
 	// top-level "type" field (synthesizer/file.go). Files without a type fall
 	// back to polling every plugin — first Handled=true wins. To prevent

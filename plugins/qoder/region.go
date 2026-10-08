@@ -23,6 +23,21 @@ const (
 var (
 	loginRegionMu sync.RWMutex
 	loginRegion   = regionCN // region for NEW logins (config login_region)
+
+	// v0.8.45 (deprecated): login_dialect was a v0.8.40 Intl-only opt-in
+	// that selected between "cockpit" (legacy no-client_id/machine_id entry)
+	// and "desktop" (official desktop-client flow). Both CN and Intl now
+	// always build the official desktop-client URL, so the dialect has no
+	// effect anymore. The config key is still parsed (usage_config.go) and
+	// the getter still returns the stored value, but startLoginWithRegion
+	// no longer reads it. Kept for backward compatibility with existing
+	// config_yaml deployments — removing it would break their `configure()`
+	// round-trip. The legacy constants qoderDesktopClientIDIntl /
+	// qoderDesktopRedirectURIIntl were removed from oauth.go for the same
+	// reason — both regions now use qoderDesktopClientID and the per-region
+	// qoderRedirectURI* (empty for CN, qoder-app:// for Intl).
+	loginDialectMu sync.RWMutex
+	loginDialect   = ""
 )
 
 // normalizeRegion maps any stored region hint onto cn/intl (default cn).
@@ -94,9 +109,10 @@ func endpointUserInfoForRegion(region string) string {
 	return upstreamBaseForRegion(region) + "/api/v1/userinfo"
 }
 
-func endpointProUpgradeFor(sa *storedAuth) string {
-	return upstreamBaseFor(sa) + "/sash/api/v1/me/pro-upgrade/claim"
-}
+// endpointProUpgradeFor was removed in v0.8.34: the /sash/api/v1/me/pro-upgrade/*
+// endpoints do not exist upstream (zero matches in the official CN client
+// v0.4.3 app.asar) — the 领取Pro flow rides the campaigns channel now
+// (checkin.go claimProViaCampaigns, campaign.go claimCampaignByID).
 
 func endpointChatFor(sa *storedAuth) string {
 	return gatewayBaseFor(sa) + "/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1"
@@ -111,6 +127,27 @@ func loadedLoginRegion() string {
 	loginRegionMu.RLock()
 	defer loginRegionMu.RUnlock()
 	return loginRegion
+}
+
+// v0.8.40 dialect accessors (parsed from login_dialect in configure()).
+const (
+	loginDialectCockpit = "cockpit"
+	loginDialectDesktop = "desktop"
+)
+
+func loadedLoginDialect() string {
+	loginDialectMu.RLock()
+	defer loginDialectMu.RUnlock()
+	if loginDialect == "" {
+		return loginDialectCockpit
+	}
+	return loginDialect
+}
+
+func setLoginDialect(d string) {
+	loginDialectMu.Lock()
+	loginDialect = d
+	loginDialectMu.Unlock()
 }
 
 func setLoginRegion(r string) {

@@ -18,6 +18,11 @@
 | **网关故障页折叠** | 上游 ALB 在 ~60s 等不到首 token 时返回 504 HTML 页（大上下文请求易触发）——不再把 HTML 原样倒给客户端，而是折叠成一条可操作的重试/压缩上下文提示；其余 5xx HTML 页给通用网关故障文案。与账号积分无关，不会被误判成额度问题 |
 | **plan-gate 分类** | 网关业务码 112（套餐额度/模型范围限制，message 里带 pricingUrl）渲染成一条可 grep 的 `plan_gate` 行；冷却只作用于（凭据, 模型）对——同账号其他模型照常可用，账号本身不判死 |
 | **积分面板** | 账号卡片：昵称/积分/计划/签到状态/操作（签到/刷新/选用） |
+| **桌面端协议** | CN/Intl 统一按官方桌面客户端 v0.4.3 协议登录（共享 client_id、CN 授权域 qoder.cn、Intl `qoder-app://`），修复 cn/init 签到与首登奖励不触发的问题；新增账号默认走桌面端 URL |
+| **真实机器身份** | campaigns/claim 按官方 runtime-info 形状携带真实机器身份（模拟 Cosy-Machine\* 头会被服务端风控行过滤，导致「今日无可签领权益」）；claim/reward/limited-number 一律不发 Cosy-Machine\* 头（风险层 503 RISK_DEPENDENCY_UNAVAILABLE 根因） |
+| **多行领取** | 支持 CLAIM_BENEFIT 与 VIEW_DETAILS 两类行；面板按上游原因给结论；`claim_unverified` 可开启对无法核实面值行的代领（默认关） |
+| **轮次持久化** | campaigns 轮次状态落盘（`qoder_campaign_rounds.json`），重启后不重复探测隐藏轮 |
+| **billing 会话** | billing 走 web-session cookie + CSRF 握手，auth-reject 会打断陈旧快照；billing 端点绕过 host bridge（HTTP/2 EOF）并禁用 HTTP/2，遵循 `config.yaml` 的 `proxy-url` |
 | **token 保活** | 22:00 定时刷新；按 token 前缀路由（drt- → deviceToken/refresh，jrt- → jobToken/refresh），PAT 永不劫持 OAuth 刷新 |
 | **auth 隔离** | 文件名前缀 `qoder-` 过滤（含收养的 `qoder-cn-`/`qoder-intl-` 旧文件），与 workbuddy 等其他插件互不干扰 |
 

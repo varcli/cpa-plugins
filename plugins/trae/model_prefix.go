@@ -26,7 +26,7 @@ import (
 // defaultModelPrefix is the prefix applied when the operator does not override
 // model_prefix. Derived from the provider id so the plugin id and the model
 // namespace can never drift apart.
-const defaultModelPrefix = providerName + "/"
+var defaultModelPrefix = providerName + "/"
 
 var (
 	modelPrefixMu sync.RWMutex

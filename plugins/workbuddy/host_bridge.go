@@ -8,12 +8,15 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
@@ -34,13 +37,76 @@ func sharedHTTPClient() *http.Client {
 		sharedClient = &http.Client{
 			Timeout: 120 * time.Second,
 			Transport: &http.Transport{
+				Proxy: billingProxyFunc,
+				// v0.9.53: resilient dialing — multi-source DNS (system +
+				// DoH cross-check), multi-IP fallback with dead-IP memory,
+				// Linux MSS clamp for MTU blackholes. IP-literal/localhost
+				// dials are byte-identical to the default transport.
+				DialContext:         billingDialContext,
 				MaxIdleConns:        20,
 				IdleConnTimeout:     90 * time.Second,
 				MaxIdleConnsPerHost: 5,
+				// v0.9.48b: disable HTTP/2. codebuddy.ai's APISIX gateway
+				// closes HTTP/2 connections mid-request with EOF (field report
+				// 2026-10-03: "Post ...get-user-resource: EOF" after 6.84s).
+				// Setting TLSNextProto to a non-nil empty map disables the
+				// HTTP/2 upgrade, forcing HTTP/1.1 which APISIX handles
+				// reliably.
+				TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
 			},
 		}
 	})
 	return sharedClient
+}
+
+// httpRescueCtxKey tags requests that must run on the rescue transport.
+type httpRescueCtxKey struct{}
+
+// httpBridgeCtxKey tags requests that must take the host bridge even when the
+// destination domain is on the direct-bypass list (codebuddy.ai /
+// workbuddy.ai). Billing exhaustion ladders use it as a fallback attempt so
+// host transport policy (config.yaml proxy-url) gets one shot even when the
+// proxy cache is still cold. The Windows stability bypass below is NOT
+// overridden by this marker.
+type httpBridgeCtxKey struct{}
+
+// withHTTPRescue marks a request context so hostHTTPDoDirect routes it through
+// rescueHTTPClient instead of the pooled sharedHTTPClient. Billing retries use
+// this after the pooled path already failed with a transport error.
+func withHTTPRescue(ctx context.Context) context.Context {
+	return context.WithValue(ctx, httpRescueCtxKey{}, true)
+}
+
+// withHTTPBridge marks a request context so hostHTTPDo routes it through the
+// host bridge despite the codebuddy.ai/workbuddy.ai direct bypass.
+func withHTTPBridge(ctx context.Context) context.Context {
+	return context.WithValue(ctx, httpBridgeCtxKey{}, true)
+}
+
+// rescueHTTPClient is the last-resort transport for billing retries. It differs
+// from sharedHTTPClient in the dimension that actually breaks long-lived pooled
+// connections on hostile paths: DisableKeepAlives opens a brand-new TCP+TLS
+// connection per attempt, because NAT/conntrack tables and intermediate
+// firewalls silently drop idle sessions, and a pooled connection that LOOKS
+// alive but is dead produces exactly the EOF shape field reports show.
+//
+// HTTP/2 stays disabled and proxy policy matches sharedHTTPClient.
+func rescueHTTPClient() *http.Client {
+	rescueClientOnce.Do(func() {
+		rescueClient = &http.Client{
+			Timeout: 120 * time.Second,
+			Transport: &http.Transport{
+				Proxy: billingProxyFunc,
+				// Fresh connection per attempt — the whole point.
+				DisableKeepAlives: true,
+				TLSNextProto:      make(map[string]func(string, *tls.Conn) http.RoundTripper),
+				// v0.9.53: same resilient dialer as the pooled client
+				// (multi-IP fallback, per-IP dead memory, MSS clamp).
+				DialContext: billingDialContext,
+			},
+		}
+	})
+	return rescueClient
 }
 
 // hostHTTPResponse is the plugin-side view of an HTTP response that came back
@@ -125,6 +191,21 @@ func hostHTTPDo(req *http.Request) (*hostHTTPResponse, error) {
 		_ = req.Body.Close()
 		bodyBytes = b
 	}
+	// v0.9.49: force direct HTTP for codebuddy.ai billing endpoints.
+	// The CPA host bridge uses Go's default http.Transport which enables
+	// HTTP/2 via ALPN. The APISIX gateway on www.codebuddy.ai closes
+	// HTTP/2 connections mid-request, returning EOF
+	// ("Post https://www.codebuddy.ai/v2/billing/meter/get-user-resource: EOF").
+	// sharedHTTPClient has TLSNextProto set to disable HTTP/2 — route
+	// billing calls through it directly instead of the host bridge.
+	// v0.9.52: the withHTTPBridge marker (billing exhaustion ladder) skips
+	// this bypass so the host bridge — and with it the config.yaml
+	// proxy-url policy — gets one fallback attempt.
+	if _, forced := req.Context().Value(httpBridgeCtxKey{}).(bool); !forced {
+		if strings.Contains(req.URL.Host, "codebuddy.ai") || strings.Contains(req.URL.Host, "workbuddy.ai") {
+			return hostHTTPDoDirect(req, bodyBytes)
+		}
+	}
 	// Windows stack movement mitigation: nested host calls during synchronous
 	// RPCs (model.for_auth, management.handle) cause the host stack to move,
 	// rendering the stack response pointer dangling and causing "unexpected
@@ -208,7 +289,11 @@ func hostHTTPDoDirect(req *http.Request, bodyBytes []byte) (*hostHTTPResponse, e
 		return nil, err
 	}
 	newReq.Header = req.Header.Clone()
-	resp, err := sharedHTTPClient().Do(newReq)
+	client := sharedHTTPClient()
+	if _, rescue := req.Context().Value(httpRescueCtxKey{}).(bool); rescue {
+		client = rescueHTTPClient()
+	}
+	resp, err := client.Do(newReq)
 	if err != nil {
 		return nil, err
 	}

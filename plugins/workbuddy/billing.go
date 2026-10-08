@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -180,13 +181,37 @@ func billingHeaders(req *http.Request, sa *storedAuth) {
 }
 
 func billingCall(sa *storedAuth, path string, body any) (json.RawMessage, error) {
-	data, err := billingCallOnce(sa, path, body)
+	data, err := billingCallOnce(sa, path, body, 0)
+	attempts := 1
 	for _, d := range billingRetryDelays {
 		if err == nil || !isTransientBillingErr(err) {
 			break
 		}
 		time.Sleep(d)
-		data, err = billingCallOnce(sa, path, body)
+		// Retry ladder (v0.9.52): attempt 1 and 3 run on the rescue transport
+		// (fresh connection per attempt) — the pooled path just failed with a
+		// transport error, so hammering the exact same socket state is how
+		// 3-for-3 EOF exhaustion happens. Attempt 2 forces the HOST BRIDGE
+		// despite the codebuddy.ai direct bypass: the bridge applies the
+		// host's own transport policy (config.yaml proxy-url), the one path
+		// that works when the deployment's proxy lives only in CPA config
+		// and the plugin hasn't seen a HostConfigSummary yet.
+		data, err = billingCallOnce(sa, path, body, attempts)
+		attempts++
+	}
+	if err != nil && isTransientBillingErr(err) {
+		// Transport-class exhaustion: keep the underlying error first (its
+		// `Post "url": EOF` shape stays greppable and transient-classified),
+		// then the actionable deployment hint, then the staged net-diag probe
+		// so a field report pinpoints the failing stage instead of another
+		// bare EOF.
+		//
+		// Also reset dial state: stickiness clearly picked a losing path,
+		// so forget the cached-good IP / dead marks and drop pooled
+		// connections (a poisoned pooled conn would otherwise serve the
+		// next billing call straight from the pool).
+		billingResetDialState()
+		return data, fmt.Errorf("%w — billing gateway unreachable after %d attempts (direct pooled+rescue fresh-conn and host-bridge paths; set proxy-url in CPA config.yaml or HTTPS_PROXY on the host process if codebuddy.ai/workbuddy.ai needs a proxy from this network)%s", err, attempts, billingNetDiagSuffix(billingBaseFor(sa)))
 	}
 	return data, err
 }
@@ -227,7 +252,12 @@ func isTransientBillingErr(err error) bool {
 	return false
 }
 
-func billingCallOnce(sa *storedAuth, path string, body any) (json.RawMessage, error) {
+// billingCallOnce performs one billing HTTP attempt. attempt 0 uses the pooled
+// sharedHTTPClient; attempt 2 marks the context for the host-bridge fallback
+// (host transport policy incl. config.yaml proxy-url); all other attempts >= 1
+// mark the context so hostHTTPDoDirect routes through rescueHTTPClient (fresh
+// connection per attempt).
+func billingCallOnce(sa *storedAuth, path string, body any, attempt int) (json.RawMessage, error) {
 	var reader *bytes.Reader
 	if body != nil {
 		raw, _ := json.Marshal(body)
@@ -236,7 +266,20 @@ func billingCallOnce(sa *storedAuth, path string, body any) (json.RawMessage, er
 		reader = bytes.NewReader([]byte("{}"))
 	}
 	base := billingBaseFor(sa)
-	req, err := http.NewRequest(http.MethodPost, base+path, reader)
+	// v0.9.48: bound the billing call with a context timeout so a hung
+	// codebuddy.ai gateway connection (field report: EOF after 6.84s)
+	// doesn't block the full 120s host-bridge ceiling. 15s is enough
+	// for any legitimate meter/checkin/plan call (all are fast JSON APIs).
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if attempt > 0 {
+		if attempt == 2 {
+			ctx = withHTTPBridge(ctx)
+		} else {
+			ctx = withHTTPRescue(ctx)
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, reader)
 	if err != nil {
 		return nil, err
 	}
@@ -259,15 +302,25 @@ func billingCallOnce(sa *storedAuth, path string, body any) (json.RawMessage, er
 	}
 	var env apiEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
+		snippet := strings.TrimSpace(redactSecrets(string(raw)))
+		if len(snippet) > 120 {
+			snippet = snippet[:120]
+		}
+		// v0.9.47: a 401/403 whose body is not even JSON is the gateway
+		// bouncing the Bearer token before the app layer speaks JSON
+		// (APISIX/nginx "401 Authorization Required" HTML page). Classify it
+		// as the credential-level rejection it is — growthHTTPError carries
+		// the status so growthErrStatus / isGrowthSessionDead recognize it —
+		// instead of the misleading "parse failed: invalid character '<'"
+		// that hid a dead session behind a JSON parse error.
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, &growthHTTPError{status: resp.StatusCode, msg: "credential rejected by gateway (non-JSON response): " + snippet}
+		}
 		// parse failed usually means upstream returned a non-JSON error page
 		// (e.g. APISIX 401 HTML for session-dead). Include a redacted snippet
 		// so the panel / logs can surface the real cause instead of a bare
 		// "parse failed" (P0-2 UX: was impossible to distinguish session dead
 		// from a malformed response).
-		snippet := strings.TrimSpace(redactSecrets(string(raw)))
-		if len(snippet) > 120 {
-			snippet = snippet[:120]
-		}
 		return nil, fmt.Errorf("parse failed: %w (body: %s)", err, snippet)
 	}
 	if env.Code != 0 {

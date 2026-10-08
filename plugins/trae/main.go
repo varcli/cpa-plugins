@@ -90,7 +90,6 @@ import (
 )
 
 const (
-	providerName = "trae"
 	authFileName = "trae.json"
 	// Official Trae favicon (trae.com.cn CDN). The CPA management UI renders
 	// metadata.logo as the plugin icon (sidebar drawer + OAuth entry) — it
@@ -691,8 +690,8 @@ func modelsForVariant(a *auth.Auth, storageJSON []byte) []pluginapi.ModelInfo {
 		}
 		seen[m.ID] = true
 		out = append(out, pluginapi.ModelInfo{
-			ID:                  variantModelID(m.ID, suffix),
-			Name:                m.Name,
+			ID:   variantModelID(m.ID, suffix),
+			Name: m.Name,
 			// v0.13.0: OwnedBy is what the host emits as the model's group on
 			// the CPA models page. Leaving it empty (the pre-0.13.0 dynamic
 			// path) landed every trae model in the "other" bucket — kiro and
