@@ -1,1 +1,0 @@
-{"bump": "minor", "note": "同步上游 mmqz/cpa-multi-plugins 最近 8 天修复：Intl 账单面（新增 intl_pay.go：grow-normal.trae.ai + /trae/api/v1/pay/*，float 容错换算；此前 intl 积分走 CN 客户端恒 401 session_dead）；面板积分条按计费变体正确渲染 + 顶部刷新实时拉取；Intl 登录/刷新持久化设备身份与密钥材料（此前 device_id_set 为 false、X-Device-Id 为空）；split 双风味构建（providerName 改 var + split_build.go）。"}
