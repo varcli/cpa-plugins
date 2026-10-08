@@ -8,30 +8,30 @@
       {
         "goarch": "amd64",
         "goos": "linux",
-        "sha256": "19887a5b8cadf10e22941eed16a57b4ad116862a0dcc6f8fd0f8c9dcdf16e844",
-        "size": 7793983,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.7.0/workbuddy_0.7.0_linux_amd64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.8.0/workbuddy_0.8.0_linux_amd64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "linux",
-        "sha256": "13ec3dba7b9a42648f48620ee9a5dc57b75b4c92844a16944bc9a68ea48b07df",
-        "size": 7115963,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.7.0/workbuddy_0.7.0_linux_arm64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.8.0/workbuddy_0.8.0_linux_arm64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "darwin",
-        "sha256": "795fb2b0616476224028b7ad3ea4467b5f2243d14cb9eb50eefab85744689693",
-        "size": 4051631,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.7.0/workbuddy_0.7.0_darwin_arm64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.8.0/workbuddy_0.8.0_darwin_arm64.zip"
       },
       {
         "goarch": "amd64",
         "goos": "windows",
-        "sha256": "f0ef6d0f713a6e802e695a9ec34f7a92f0a31424ea975f70cc05c8446e8d64c4",
-        "size": 7756154,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.7.0/workbuddy_0.7.0_windows_amd64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.8.0/workbuddy_0.8.0_windows_amd64.zip"
       }
     ],
     "type": "direct"
@@ -46,5 +46,5 @@
     "codebuddy",
     "tencent"
   ],
-  "version": "0.7.0"
+  "version": "0.8.0"
 }
