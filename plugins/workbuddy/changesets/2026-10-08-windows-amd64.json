@@ -1,1 +1,0 @@
-{"bump": "minor", "note": "新增 windows/amd64 发布产物（.dll）：发布工作流增加 windows-latest 构建矩阵，产物打包统一改走 release.go pack（Go 标准库 archive/zip 打包并按宿主契约自检），不再依赖各平台 shell 的 zip 命令，顺带修掉 windows 运行器没有 zip 的问题；pack 新增 --goos/--goarch 断言，矩阵与 runner 不一致时立即失败。registry.json 按平台下发，Windows 宿主可直接安装。"}

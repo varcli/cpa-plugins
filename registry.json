@@ -220,7 +220,7 @@
       "name": "WorkBuddy",
       "description": "Tencent CodeBuddy / WorkBuddy unified provider for CLIProxyAPI: one credit pool, three realms (copilot.tencent.com CN, workbuddy.ai Global, codebuddy.ai Intl), dual login platforms (CLI + CodeBuddy IDE), auto-adopts legacy codebuddy-cn / codebuddy-intl auth files, OpenAI-compatible chat, daily check-in, credit lifecycle, multi-account pool.",
       "author": "varcli",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "repository": "https://github.com/varcli/cpa-plugins",
       "homepage": "https://github.com/varcli/cpa-plugins/tree/main/plugins/workbuddy",
       "license": "MIT",
@@ -233,25 +233,32 @@
       "install": {
         "artifacts": [
           {
+            "goarch": "amd64",
+            "goos": "linux",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.7.0/workbuddy_0.7.0_linux_amd64.zip"
+          },
+          {
+            "goarch": "arm64",
+            "goos": "linux",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.7.0/workbuddy_0.7.0_linux_arm64.zip"
+          },
+          {
             "goarch": "arm64",
             "goos": "darwin",
-            "sha256": "f24b298fe1e0b8c838dba81371f279263a55dbb893ce1faa0330a1224209f5c0",
-            "size": 3946006,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.6.0/workbuddy_0.6.0_darwin_arm64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.7.0/workbuddy_0.7.0_darwin_arm64.zip"
           },
           {
             "goarch": "amd64",
-            "goos": "linux",
-            "sha256": "91dc8dd9ca0a2607f9675409ba1c67412df2ab0e759e2e276c92e64a62c45925",
-            "size": 7696569,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.6.0/workbuddy_0.6.0_linux_amd64.zip"
-          },
-          {
-            "goarch": "arm64",
-            "goos": "linux",
-            "sha256": "abedf6f0fbe6f3e43cf4a81f818b979e83beeeddebd84a33c348c960de492354",
-            "size": 7004307,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.6.0/workbuddy_0.6.0_linux_arm64.zip"
+            "goos": "windows",
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.7.0/workbuddy_0.7.0_windows_amd64.zip"
           }
         ],
         "type": "direct"
