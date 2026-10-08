@@ -43,7 +43,7 @@ tidy 会**清掉失效条目**：cline 的 `go.sum` 从 51 行降到 2 行，删
 
 ```bash
 cd plugins/<id>
-CGO_ENABLED=1 go list -deps -mod=readonly ./...   # 三个 CI 目标都过才算齐
+CGO_ENABLED=1 go list -deps -mod=readonly ./...   # 四个 CI 目标都过才算齐
 CGO_ENABLED=1 go mod verify
 ```
 
@@ -90,6 +90,8 @@ go version   # go1.27.1 linux/amd64
 
 - `linux/arm64`：可用 `zig cc -target aarch64-linux-musl` 交叉编译（Alpine 无 aarch64
   交叉 gcc，zig 是可行替代）。
+- `windows/amd64`：本机装了 MinGW-w64 时可直接 `pack`（CI 的 windows-latest 自带 gcc，
+  工作流会把 `C:\mingw64\bin` 前置到 PATH）。Go 的 c-shared 只依赖系统 DLL，产物可直接装载。
 - `darwin/arm64`：本机仍验不了——zig 能产 Mach-O，但链接需要 macOS SDK
   （`unable to find dynamic system library 'resolv'`），只能交给 CI 的 macos-14。
 
@@ -99,6 +101,7 @@ go version   # go1.27.1 linux/amd64
 只能在 CI 侧完成，汇报时应标注「未本地执行」而非「已通过」：
 
 - `darwin/arm64` 的 c-shared 产物（需 macOS SDK）
+- `windows/amd64` 的 c-shared 产物（本机没有 MinGW-w64，需装了 gcc 的 Windows 环境或 CI）
 - `scripts/dev-sandbox.go` 的沙箱断言（需缓存宿主二进制）
 - `release.go publish`（需 git remote）
 

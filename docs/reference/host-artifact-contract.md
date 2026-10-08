@@ -11,7 +11,7 @@
 | 资产名 | `<id>_<version>_<goos>_<goarch>.zip` |
 | 校验文件 | 必须叫 `checksums.txt` |
 | 包内条目 | 只能有一个动态库，位于压缩包根级，名为 `<id><扩展名>` |
-| 平台扩展名 | linux 用 `.so`，darwin 用 `.dylib` |
+| 平台扩展名 | linux 用 `.so`，darwin 用 `.dylib`，windows 用 `.dll` |
 
 ## 相关错误
 

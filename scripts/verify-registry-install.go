@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"debug/elf"
 	"debug/macho"
+	"debug/pe"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -311,6 +312,31 @@ func verifyLibraryFormat(goos, goarch string, data []byte) error {
 
 		if expectedCPU != 0 && machoFile.Cpu != expectedCPU {
 			return fmt.Errorf("Mach-O CPU mismatch: got %v, want %v", machoFile.Cpu, expectedCPU)
+		}
+		return nil
+
+	case "windows":
+		// 用 debug/pe 校验确实是 PE 动态库, 且架构与声明一致。
+		peFile, err := pe.NewFile(bytes.NewReader(data))
+		if err != nil {
+			return fmt.Errorf("invalid PE format: %w", err)
+		}
+		defer peFile.Close()
+
+		if peFile.FileHeader.Characteristics&pe.IMAGE_FILE_DLL == 0 {
+			return fmt.Errorf("PE file is not a DLL (characteristics=0x%04x)", peFile.FileHeader.Characteristics)
+		}
+
+		var expectedMachine uint16
+		switch goarch {
+		case "amd64":
+			expectedMachine = pe.IMAGE_FILE_MACHINE_AMD64
+		case "arm64":
+			expectedMachine = pe.IMAGE_FILE_MACHINE_ARM64
+		}
+
+		if expectedMachine != 0 && peFile.FileHeader.Machine != expectedMachine {
+			return fmt.Errorf("PE machine mismatch: got 0x%04x, want 0x%04x", peFile.FileHeader.Machine, expectedMachine)
 		}
 		return nil
 

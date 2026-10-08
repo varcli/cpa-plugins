@@ -34,6 +34,8 @@ plugins:
 
 宿主会按 `registry.json` 拉取对应平台的产物并装载。
 
+当前发布 linux/amd64、linux/arm64、darwin/arm64、windows/amd64 四个平台，扩展名分别为 `.so`/`.dylib`/`.dll`。
+
 ### 从源码
 
 ```bash

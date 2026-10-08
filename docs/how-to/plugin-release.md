@@ -108,7 +108,7 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/p
 
 | 子命令 | 作用 |
 | --- | --- |
-| `version --plugin <id>` | 消费变更集，写 `plugin.json` 的版本与三处地址、Go 版本字面量 |
+| `version --plugin <id>` | 消费变更集，写 `plugin.json` 的版本与各平台产物地址、Go 版本字面量 |
 | `pack --plugin <id> --out dist` | 本机打包预检（命名与结构） |
 | `record --plugin <id>` | 用 dist 里的 zip 回填哈希并重建 registry（正式回填由 CI 做） |
 | `publish --plugin <id>` | 一条命令做完上面全部，另加门禁、提交、打标签、推送 |

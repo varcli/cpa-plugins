@@ -31,11 +31,13 @@ unzip qoder_0.1.0_linux_arm64.zip
 cp qoder.so /path/to/cliproxyapi/plugins/qoder.so
 ```
 
+当前发布 `linux/amd64`、`linux/arm64`、`darwin/arm64`、`windows/amd64` 四个平台，扩展名分别为 `.so`/`.dylib`/`.dll`。
+
 ### 从源码
 
 ```bash
 cd plugins/qoder
-CGO_ENABLED=1 go build -buildmode=c-shared -o qoder.so .
+CGO_ENABLED=1 go build -buildmode=c-shared -o qoder.so .   # windows 下 -o qoder.dll
 ```
 
 ### config.yaml

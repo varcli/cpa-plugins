@@ -54,7 +54,8 @@ For multi-arch deployments use the platform subdirectory convention:
 plugins/
   linux/amd64/workbuddy.so
   linux/arm64/workbuddy.so
-  darwin/arm64/workbuddy.so
+  darwin/arm64/workbuddy.dylib
+  windows/amd64/workbuddy.dll
 ```
 
 ### 2. Enable in `config.yaml`

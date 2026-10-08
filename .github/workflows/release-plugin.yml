@@ -38,15 +38,15 @@ jobs:
           - goos: linux
             goarch: amd64
             runner: ubuntu-latest
-            extension: ".so"
           - goos: linux
             goarch: arm64
             runner: ubuntu-24.04-arm
-            extension: ".so"
           - goos: darwin
             goarch: arm64
             runner: macos-14
-            extension: ".dylib"
+          - goos: windows
+            goarch: amd64
+            runner: windows-latest
 
     steps:
       - name: Checkout
@@ -58,23 +58,16 @@ jobs:
           go-version-file: plugins/${{ needs.parse-tag.outputs.plugin_id }}/go.mod
           cache: true
 
-      - name: Build dynamic library
-        env:
-          CGO_ENABLED: "1"
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          PLUGIN_ID: ${{ needs.parse-tag.outputs.plugin_id }}
-          EXTENSION: ${{ matrix.extension }}
-        run: |
-          cd "plugins/${PLUGIN_ID}"
-          go build -buildmode=c-shared -o "${PLUGIN_ID}${EXTENSION}" .
-        shell: bash
-
-      # 三处命名都由宿主 internal/pluginstore 定死, 改动会导致安装失败:
+      # 构建 + 打包交给 release.go pack: 它按宿主 internal/pluginstore 的契约命名并自检,
+      # 三处命名都由宿主定死, 改动会导致安装失败:
       # 资产名 = <id>_<version>_<goos>_<goarch>.zip (ArchiveName);
       # 包内只允许一个根级动态库, 名为 <id><扩展名> 或 <id>-v<version><扩展名>;
       # 校验文件必须叫 checksums.txt。
-      - name: Pack zip
+      # 用 Go 的 archive/zip 打包, 顺带避开 Windows 运行器没有 zip 命令的问题,
+      # 各平台走同一条已验证的路径。
+      # 平台必须由本机原生产出: c-shared 是 CGO 构建, 交叉编译需要目标平台 C 工具链,
+      # 所以 --goos/--goarch 只用于对齐 CI 矩阵与本机平台, 不一致时直接失败。
+      - name: Build and pack
         id: pack
         shell: bash
         env:
@@ -82,18 +75,27 @@ jobs:
           VERSION: ${{ needs.parse-tag.outputs.version }}
           GOOS_NAME: ${{ matrix.goos }}
           GOARCH_NAME: ${{ matrix.goarch }}
-          EXTENSION: ${{ matrix.extension }}
         run: |
+          set -euo pipefail
+          if [ "${RUNNER_OS:-}" = "Windows" ]; then
+            # windows 运行器把 MinGW 装在 C:\mingw64, 但不保证它在 PATH 最前, 而 cgo 需要 gcc
+            export PATH="/c/mingw64/bin:$PATH"
+          fi
+          go run scripts/release.go pack \
+            --plugin "${PLUGIN_ID}" \
+            --version "${VERSION}" \
+            --goos "${GOOS_NAME}" \
+            --goarch "${GOARCH_NAME}" \
+            --out dist
           asset="${PLUGIN_ID}_${VERSION}_${GOOS_NAME}_${GOARCH_NAME}.zip"
-          ( cd "plugins/${PLUGIN_ID}" && zip "${asset}" "${PLUGIN_ID}${EXTENSION}" )
-          mv "plugins/${PLUGIN_ID}/${asset}" .
+          test -f "dist/${asset}"
           echo "asset=${asset}" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.pack.outputs.asset }}
-          path: ${{ steps.pack.outputs.asset }}
+          path: dist/${{ steps.pack.outputs.asset }}
           if-no-files-found: error
 
   release:

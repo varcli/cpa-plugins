@@ -8,7 +8,7 @@ package main
 //
 // 用法:
 //	go run scripts/release.go version --plugin <id> [--version <v>]
-//	go run scripts/release.go pack    --plugin <id> [--version <v>] [--out dist]
+//	go run scripts/release.go pack    --plugin <id> [--version <v>] [--out dist] [--goos <os>] [--goarch <arch>]
 //	go run scripts/release.go record  --plugin <id> [--dist dist]
 //	go run scripts/release.go publish --plugin <id> [--version <v>] [--dry-run] [--no-push]
 //
@@ -82,6 +82,42 @@ func archiveName(id, version, goos, goarch string) string {
 }
 
 var reGoVersionLiteral = regexp.MustCompile(`(\bVersion:\s*)"([0-9]+\.[0-9]+\.[0-9]+[^"]*)"`)
+
+// 发布工作流是各平台构建矩阵的唯一事实来源: version 按它物化 plugin.json 的
+// artifacts, 新增平台只需改工作流一处, 不会出现"矩阵里有、清单里没有"的漂移。
+var reWorkflowGOOS = regexp.MustCompile(`^\s*-\s*goos:\s*"?([A-Za-z0-9_]+)"?\s*$`)
+var reWorkflowGOARCH = regexp.MustCompile(`^\s*goarch:\s*"?([A-Za-z0-9_]+)"?\s*$`)
+
+const releaseWorkflowPath = ".github/workflows/release-plugin.yml"
+
+type releasePlatform struct {
+	GOOS   string
+	GOARCH string
+}
+
+// releaseWorkflowPlatforms 按工作流里出现的顺序返回构建矩阵的平台集合。
+func releaseWorkflowPlatforms() ([]releasePlatform, error) {
+	data, err := os.ReadFile(releaseWorkflowPath)
+	if err != nil {
+		return nil, fmt.Errorf("读取 %s 失败: %w", releaseWorkflowPath, err)
+	}
+	var platforms []releasePlatform
+	pendingGOOS := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		if match := reWorkflowGOOS.FindStringSubmatch(line); len(match) > 1 {
+			pendingGOOS = strings.TrimSpace(match[1])
+			continue
+		}
+		if match := reWorkflowGOARCH.FindStringSubmatch(line); len(match) > 1 && pendingGOOS != "" {
+			platforms = append(platforms, releasePlatform{GOOS: pendingGOOS, GOARCH: strings.TrimSpace(match[1])})
+			pendingGOOS = ""
+		}
+	}
+	if len(platforms) == 0 {
+		return nil, fmt.Errorf("%s 中未解析到任何构建平台", releaseWorkflowPath)
+	}
+	return platforms, nil
+}
 
 // reSemver 校验 --version 显式覆盖值; 与 bumpVersion 的 x.y.z 约定一致。
 var reSemver = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
@@ -344,25 +380,42 @@ func runVersion(args []string) error {
 	if !ok {
 		return fmt.Errorf("plugin.json 缺少 install 段")
 	}
-	rawArtifacts, ok := install["artifacts"].([]any)
-	if !ok || len(rawArtifacts) == 0 {
-		return fmt.Errorf("plugin.json 的 install.artifacts 为空")
+	// artifacts 以发布工作流的构建矩阵为准: 矩阵新增平台(如 windows)时, 这里自动
+	// 补出对应条目; 矩阵去掉平台时一并移除。哈希留空, 由 CI 的 record 作业按真实
+	// 上传产物回填 —— 本地产物不能用来回填, 否则安装时报 checksum mismatch。
+	platforms, err := releaseWorkflowPlatforms()
+	if err != nil {
+		return err
 	}
-	for _, raw := range rawArtifacts {
-		entry, ok := raw.(map[string]any)
-		if !ok {
-			return fmt.Errorf("artifacts 条目不是对象")
+	existing := map[string]map[string]any{}
+	if rawArtifacts, ok := install["artifacts"].([]any); ok {
+		for _, raw := range rawArtifacts {
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			goos, _ := entry["goos"].(string)
+			goarch, _ := entry["goarch"].(string)
+			if goos == "" || goarch == "" {
+				continue
+			}
+			existing[goos+"/"+goarch] = entry
 		}
-		goos, _ := entry["goos"].(string)
-		goarch, _ := entry["goarch"].(string)
-		if goos == "" || goarch == "" {
-			return fmt.Errorf("artifact 缺少 goos 或 goarch")
+	}
+	materialized := make([]any, 0, len(platforms))
+	for _, platform := range platforms {
+		entry := existing[platform.GOOS+"/"+platform.GOARCH]
+		if entry == nil {
+			entry = map[string]any{"goos": platform.GOOS, "goarch": platform.GOARCH}
+			fmt.Printf("[+] 按工作流矩阵新增平台 %s/%s\n", platform.GOOS, platform.GOARCH)
 		}
 		entry["url"] = fmt.Sprintf("%s/releases/download/%s%%2Fv%s/%s",
-			releaseRepoBase, id, nextVersion, archiveName(id, nextVersion, goos, goarch))
+			releaseRepoBase, id, nextVersion, archiveName(id, nextVersion, platform.GOOS, platform.GOARCH))
 		entry["sha256"] = ""
 		entry["size"] = json.Number("0")
+		materialized = append(materialized, entry)
 	}
+	install["artifacts"] = materialized
 
 	encoded, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -645,12 +698,24 @@ func runPack(args []string) error {
 	pluginID := fs.String("plugin", "", "插件 id (plugins/ 下的目录名)")
 	version := fs.String("version", "", "覆盖版本号, 默认取 plugin.json")
 	outDir := fs.String("out", "dist", "产物输出目录")
+	wantGOOS := fs.String("goos", "", "断言本机 GOOS (CI 矩阵对齐用); 与 runtime.GOOS 不一致时失败")
+	wantGOARCH := fs.String("goarch", "", "断言本机 GOARCH (CI 矩阵对齐用); 与 runtime.GOARCH 不一致时失败")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if strings.TrimSpace(*pluginID) == "" {
 		fs.Usage()
 		return fmt.Errorf("必须指定 --plugin")
+	}
+
+	// c-shared 是 CGO 构建, 交叉编译需要目标平台 C 工具链, 只能为当前平台打包。
+	// CI 矩阵按 runner 分发平台, 这里断言两者一致: 矩阵写错或 runner 漂移时立刻失败,
+	// 而不是产出一个标着 A 平台、实际是 B 平台的产物。
+	if want := strings.TrimSpace(*wantGOOS); want != "" && !strings.EqualFold(want, runtime.GOOS) {
+		return fmt.Errorf("本机 GOOS 是 %s, 无法产出 %s 的产物; c-shared 不能交叉编译", runtime.GOOS, want)
+	}
+	if want := strings.TrimSpace(*wantGOARCH); want != "" && !strings.EqualFold(want, runtime.GOARCH) {
+		return fmt.Errorf("本机 GOARCH 是 %s, 无法产出 %s 的产物; c-shared 不能交叉编译", runtime.GOARCH, want)
 	}
 
 	pluginDir := filepath.Join("plugins", *pluginID)
