@@ -30,33 +30,38 @@
 
 ## 快速开始
 
-### 1. 安装插件
+### 1. 订阅插件源（推荐）
 
-把编译好的 `workbuddy.so` 放到 CPA 插件目录：
-
-```bash
-cp workbuddy.so /path/to/cliproxyapi/plugins/
-```
-
-多架构部署可用平台子目录约定：
-
-```
-plugins/
-  linux/amd64/workbuddy.so
-  linux/arm64/workbuddy.so
-  darwin/arm64/workbuddy.so
-```
-
-### 2. 启用配置
+在 CPA 的 `config.yaml` 中把本仓加入 `plugins.store-sources` 并启用插件，
+宿主会自动拉取对应平台产物并校验 SHA256：
 
 ```yaml
 plugins:
   enabled: true
   dir: plugins
+  store-sources:
+    - https://raw.githubusercontent.com/varcli/cpa-plugins/main/registry.json
   configs:
     workbuddy:
       enabled: true
 ```
+
+重启 CPA（或在管理面「插件」页安装）即完成装载。当前发布 `linux/amd64`、
+`linux/arm64`、`darwin/arm64`、`windows/amd64` 四个平台。
+
+**手工安装**（不走插件源）：把编译好的动态库放进 CPA 插件目录，可平铺或按平台子目录：
+
+```
+plugins/
+  linux/amd64/workbuddy.so
+  linux/arm64/workbuddy.so
+  darwin/arm64/workbuddy.dylib
+  windows/amd64/workbuddy.dll
+```
+
+### 2. 配置
+
+上面的片段已足够启动，可选配置项见下文「配置项」小节。
 
 ### 3. 登录
 
@@ -73,7 +78,7 @@ curl http://localhost:8317/v1/chat/completions \
   -H "Authorization: Bearer $CPA_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "point/deepseek-v4-flash",
+    "model": "workbuddy/deepseek-v4-flash",
     "messages": [{"role": "user", "content": "hi"}],
     "stream": true
   }'

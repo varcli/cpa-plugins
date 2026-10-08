@@ -57,15 +57,28 @@ dashboard.
 
 ## Quickstart
 
-### 1. Install the plugin
+### 1. Subscribe to the plugin store (recommended)
 
-Drop the compiled `workbuddy.so` into CPA's plugin directory:
+Add this repository to `plugins.store-sources` in CPA's `config.yaml` and enable
+the plugin; the host downloads the matching platform artifact and verifies its
+SHA256 automatically:
 
-```bash
-cp workbuddy.so /path/to/cliproxyapi/plugins/
+```yaml
+plugins:
+  enabled: true
+  dir: plugins
+  store-sources:
+    - https://raw.githubusercontent.com/varcli/cpa-plugins/main/registry.json
+  configs:
+    workbuddy:
+      enabled: true
 ```
 
-For multi-arch deployments use the platform subdirectory convention:
+Restart CPA (or install from the management **Plugins** page). Published
+platforms: `linux/amd64`, `linux/arm64`, `darwin/arm64`, `windows/amd64`.
+
+**Manual install** (without the store): drop the compiled library into CPA's
+plugin directory — either flat or in the platform subdirectory convention:
 
 ```
 plugins/
@@ -75,16 +88,10 @@ plugins/
   windows/amd64/workbuddy.dll
 ```
 
-### 2. Enable in `config.yaml`
+### 2. Configure
 
-```yaml
-plugins:
-  enabled: true
-  dir: plugins
-  configs:
-    workbuddy:
-      enabled: true
-```
+The snippet above is enough to start. Optional keys are documented in the
+[Configuration](#configuration) section below.
 
 ### 3. Sign in
 
@@ -103,7 +110,7 @@ curl http://localhost:8317/v1/chat/completions \
   -H "Authorization: Bearer $CPA_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "point/deepseek-v4-flash",
+    "model": "workbuddy/deepseek-v4-flash",
     "messages": [{"role": "user", "content": "hi"}],
     "stream": true
   }'
