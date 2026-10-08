@@ -8,29 +8,29 @@
       {
         "goarch": "amd64",
         "goos": "linux",
-        "sha256": "",
-        "size": 0,
+        "sha256": "88938abb64c1243a50314fdab9e3fc35ec5deaf77de7e59e4ce4c5c77bcea9c0",
+        "size": 1981761,
         "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.6.2/cline_0.6.2_linux_amd64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "linux",
-        "sha256": "",
-        "size": 0,
+        "sha256": "12e6a208df0a529fe868853cb1435bfce71922c3d4b41432c6185c642a0ba353",
+        "size": 1817548,
         "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.6.2/cline_0.6.2_linux_arm64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "darwin",
-        "sha256": "",
-        "size": 0,
+        "sha256": "ac0f942220323f37874e84e863611f809800129dcc04ae2806a0f0c5e60d3374",
+        "size": 1775600,
         "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.6.2/cline_0.6.2_darwin_arm64.zip"
       },
       {
         "goarch": "amd64",
         "goos": "windows",
-        "sha256": "",
-        "size": 0,
+        "sha256": "c54c9daaa96b7655377fdc23fc0222a00faeffb4c19d912a2c5f5ad0e4a39f4d",
+        "size": 1946949,
         "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.6.2/cline_0.6.2_windows_amd64.zip"
       }
     ],
