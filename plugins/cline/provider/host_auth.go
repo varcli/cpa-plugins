@@ -48,12 +48,10 @@ func hostAuthListFiles() ([]hostAuthFileEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	var env envelope
-	if err := json.Unmarshal(raw, &env); err != nil || !env.OK {
-		return nil, fmt.Errorf("host.auth.list failed")
-	}
+	// callHostCall 返回的已经是宿主 envelope 里的 result 本体
+	// (callHost 在 main.go 中已剥掉外层 {"ok":..,"result":..}), 这里直接解内层结构。
 	var resp hostAuthListResponse
-	if err := json.Unmarshal(env.Result, &resp); err != nil {
+	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil, fmt.Errorf("host.auth.list decode result: %w", err)
 	}
 	return resp.Files, nil
@@ -84,13 +82,10 @@ func hostAuthSaveJSON(name string, raw []byte) error {
 	if err != nil {
 		return fmt.Errorf("host.auth.save: %w", err)
 	}
-	var env envelope
-	if err := json.Unmarshal(rawResp, &env); err != nil || !env.OK {
-		msg := "host.auth.save failed"
-		if env.Error != nil && strings.TrimSpace(env.Error.Message) != "" {
-			msg = env.Error.Message
-		}
-		return fmt.Errorf("%s", msg)
+	// callHostCall 已剥掉外层 envelope; 返回的是 HostAuthSaveResponse 本体。
+	// 失败会以 error 形式返回 (callHost 内已把 env.Error 转成 error)。
+	if len(rawResp) == 0 {
+		return fmt.Errorf("host.auth.save returned no response")
 	}
 	return nil
 }

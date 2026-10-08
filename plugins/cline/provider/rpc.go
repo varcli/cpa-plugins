@@ -329,12 +329,10 @@ func closeHostHTTPStream(streamID string) {
 }
 
 func decodeHostAuthGetResponse(raw []byte) ([]byte, error) {
-	var env envelope
-	if err := json.Unmarshal(raw, &env); err != nil || !env.OK {
-		return nil, fmt.Errorf("host.auth.get failed")
-	}
+	// callHostCall 返回的已经是宿主 envelope 里的 result 本体
+	// (callHost 在 main.go 中已剥掉外层), 这里直接解内层结构。
 	var resp hostAuthGetResponse
-	if err := json.Unmarshal(env.Result, &resp); err != nil {
+	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil, fmt.Errorf("host.auth.get decode result: %w", err)
 	}
 	if len(resp.JSON) == 0 {

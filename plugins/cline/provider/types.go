@@ -43,9 +43,6 @@ var (
 	workOSAPIBase = "https://api.workos.com"
 )
 
-type envelope = clinerpc.Envelope
-type envelopeError = clinerpc.EnvelopeError
-
 // registrationPayload mirrors the host's rpcRegistration (internal/pluginhost)
 // and the other provider plugins' registration output.
 type registrationPayload struct {
