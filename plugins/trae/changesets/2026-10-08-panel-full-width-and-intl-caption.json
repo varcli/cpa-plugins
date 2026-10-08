@@ -1,1 +1,0 @@
-{"bump": "patch", "note": "修复面板全宽自适应与 Intl 文案：同步上游时 panel.html 被上游版本覆盖，丢失了本仓的全宽布局（.wrap 回到 max-width:1100px），宽屏下内容不占满——现按其余 4 个面板同一套样式恢复（max-width:none + clamp 自适应内边距、.grid auto-fit、卡片圆角 14px），实测 1600px 视口下 .wrap 由 1100px(受限) 变为 1576px(占满)。同时修正从 workbuddy 面板复制来的错误文案：Intl 域名 codebuddy.ai → api.marscode.com，并去掉「无积分」——Intl 已支持积分查询，仅无每日签到。"}
