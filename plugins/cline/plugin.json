@@ -6,25 +6,32 @@
   "install": {
     "artifacts": [
       {
+        "goarch": "amd64",
+        "goos": "linux",
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.6.0/cline_0.6.0_linux_amd64.zip"
+      },
+      {
+        "goarch": "arm64",
+        "goos": "linux",
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.6.0/cline_0.6.0_linux_arm64.zip"
+      },
+      {
         "goarch": "arm64",
         "goos": "darwin",
-        "sha256": "fe66f23e0c2879f36e85e3fa9307a25b3b4e32b7af615a614f8d02137b488294",
-        "size": 1799972,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.5.0/cline_0.5.0_darwin_arm64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.6.0/cline_0.6.0_darwin_arm64.zip"
       },
       {
         "goarch": "amd64",
-        "goos": "linux",
-        "sha256": "09e120093c6a453eb32cb053682d20395c02a8e1ca886d0543391c0abe577da7",
-        "size": 3485617,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.5.0/cline_0.5.0_linux_amd64.zip"
-      },
-      {
-        "goarch": "arm64",
-        "goos": "linux",
-        "sha256": "dba356ac9232352b00bec8cd14a4a2008adb2f3a6596862721a4bf49f27124fe",
-        "size": 3180208,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.5.0/cline_0.5.0_linux_arm64.zip"
+        "goos": "windows",
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/cline%2Fv0.6.0/cline_0.6.0_windows_amd64.zip"
       }
     ],
     "type": "direct"
@@ -40,5 +47,5 @@
     "workos",
     "oauth"
   ],
-  "version": "0.5.0"
+  "version": "0.6.0"
 }
