@@ -342,7 +342,7 @@ func wbRegistration() registration {
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             providerName,
-			Version:          "0.8.0",
+			Version:          "0.8.1",
 			Author:           "varcli",
 			GitHubRepository: "https://github.com/varcli/cpa-plugins",
 			Logo:             pluginLogoURL,
