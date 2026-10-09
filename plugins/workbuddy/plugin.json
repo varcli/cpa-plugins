@@ -8,29 +8,29 @@
       {
         "goarch": "amd64",
         "goos": "linux",
-        "sha256": "",
-        "size": 0,
+        "sha256": "0126ccbb17e493bd68e8170cbf4658e081d2e0336d96b54e04d8045a813a3159",
+        "size": 4457285,
         "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.8.1/workbuddy_0.8.1_linux_amd64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "linux",
-        "sha256": "",
-        "size": 0,
+        "sha256": "4416a5df5c6dc818a44a26f76730234f806bbed785708c251b5a55eba4c7d672",
+        "size": 4058403,
         "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.8.1/workbuddy_0.8.1_linux_arm64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "darwin",
-        "sha256": "",
-        "size": 0,
+        "sha256": "64aa15931825dd00558ccb3df7a106d60edac5d5eff0236fc1f1573caaa5990c",
+        "size": 3912556,
         "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.8.1/workbuddy_0.8.1_darwin_arm64.zip"
       },
       {
         "goarch": "amd64",
         "goos": "windows",
-        "sha256": "",
-        "size": 0,
+        "sha256": "7376dd4ee06798b8e952380c5415f02c962da04d34289100fdbe5d960a476de8",
+        "size": 4328047,
         "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.8.1/workbuddy_0.8.1_windows_amd64.zip"
       }
     ],
