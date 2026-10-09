@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -268,6 +269,59 @@ func containsInputTooLargeMarker(low string) bool {
 	return false
 }
 
+// promptOverflowDetail renders the token counts the upstream already computed,
+// e.g. "1130300 tokens > 1048576 maximum". The gateway reports the exact
+// numbers; surfacing them turns "prompt is too long" into an actionable
+// "you are over by N" without any guesswork on our side. Returns "" when the
+// payload carries no such numbers (bare 413 HTML / empty body), so the caller
+// falls back to the generic wording.
+//
+// Accepts both the raw and the JSON-escaped form of ">" (\u003e) — the
+// gateway escapes it inside the msg field, and the log line shows exactly that.
+var rePromptOverflowCounts = regexp.MustCompile(`(\d+)\s*tokens?\s*>\s*(\d+)`)
+
+func promptOverflowDetail(payload string) string {
+	// JSON 把字符串里的 ">" 转义成 \u003e（Go regexp 不支持 \u 转义，
+	// 所以先归一化再匹配）；HTML 页面可能用 &gt;。
+	normalized := strings.ReplaceAll(payload, `\u003e`, ">")
+	normalized = strings.ReplaceAll(normalized, "&gt;", ">")
+	m := rePromptOverflowCounts.FindStringSubmatch(normalized)
+	if len(m) != 3 {
+		return ""
+	}
+	over := int64(0)
+	if have, errA := strconv.ParseInt(m[1], 10, 64); errA == nil {
+		if max, errB := strconv.ParseInt(m[2], 10, 64); errB == nil && have > max {
+			over = have - max
+		}
+	}
+	if over > 0 {
+		return fmt.Sprintf("%s tokens > %s maximum（超出 %s）", m[1], m[2], formatThousands(over))
+	}
+	return fmt.Sprintf("%s tokens > %s maximum", m[1], m[2])
+}
+
+// formatThousands renders an integer with ASCII thousands separators
+// (1130300 -> 1,130,300) so a 7-digit token count stays readable.
+func formatThousands(n int64) string {
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	digits := strconv.FormatInt(n, 10)
+	var b strings.Builder
+	for i, c := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(c)
+	}
+	if neg {
+		return "-" + b.String()
+	}
+	return b.String()
+}
+
 // isPromptTooLong reports the 11115 prompt-overflow rejection (400/404/413 +
 // code 11115 / "prompt is too long" wording). Context overflow is a
 // REQUEST-level problem — the same body overflows on any account — so the
@@ -392,6 +446,12 @@ func translateChatUpstreamErrorFull(statusCode int, payload string, sa *storedAu
 		detail := "413/context limit exceeded"
 		if strings.Contains(payload, "11115") {
 			detail = "code 11115 prompt is too long"
+		}
+		// v0.9.55: 上游已经在 msg 里给出了具体数字（1130300 tokens >
+		// 1048576 maximum）。把它提炼出来，用户一眼能看到超出多少，
+		// 而不是只有一个笼统的"过长"。裸 413 / 空体没有数字时退回原文案。
+		if counts := promptOverflowDetail(payload); counts != "" {
+			detail = detail + " · " + counts
 		}
 		return fmt.Errorf(
 			"提示词过长（%s）——上下文超出模型上限，属于请求本身的问题，与账号无关；请缩短上下文/清理会话或开新会话后重试。"+
