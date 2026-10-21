@@ -348,7 +348,7 @@ type registrationCapability struct {
 // from the version the manifest was bumped to.
 var pluginVersionLiteral = struct {
 	Version string
-}{Version: "0.9.62"}
+}{Version: "0.9.0"}
 
 // version is what the plugin self-reports to the host.
 var version = pluginVersionLiteral.Version
