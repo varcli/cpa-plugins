@@ -1,11 +1,9 @@
 // Package main implements the qoderwork CLIProxyAPI dynamic plugin.
 //
-// qoder wraps the Qoder CN (qoder.com.cn) and Intl (qoder.com) OpenAPIs as a
-// cliproxy provider: it exchanges a PAT for a jobToken, refreshes it, signs
-// inference requests with COSY, and exposes the standard chat-completions
-// interface.
-//
-// Built with -buildmode=c-shared and exports the cliproxy C ABI entry points.
+// qoderwork wraps the QoderWork CN (qoder.com.cn) OpenAPI as a cliproxy
+// provider: it exchanges a PAT for a jobToken, refreshes it, signs inference
+// requests with COSY, and exposes the standard chat-completions interface.
+// upstream /v2/chat/completions endpoint.
 package main
 
 /*
@@ -74,7 +72,8 @@ import (
 const (
 	authFileName  = "qoder.json"
 	pluginLogoURL = "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/QoderWork.png"
-	// Qoder CN: OpenAPI for auth/billing, gateway for COSY-signed inference.
+	// QoderWork CN: OpenAPI for auth/billing, gateway for COSY-signed inference.
+	// See /root/qoderwork/KNOWLEDGE.md §1-§5.
 	upstreamBaseCN = "https://openapi.qoder.com.cn"
 	gatewayBaseCN  = "https://gateway.qoder.com.cn"
 	// Intl bases (merged qoder-intl plugin, v0.10.0): openapi.qoder.sh is
@@ -96,7 +95,10 @@ const (
 	// unclaimed days and grants nothing) — check-in rides the campaigns
 	// system for both regions (billing.go/campaign.go). The legacy status
 	// probe lives in billing.go as a read-only stats supplement.
-	endpointProUpgrade = upstreamBaseCN + "/sash/api/v1/me/pro-upgrade/claim"
+	// endpointProUpgrade removed v0.8.34: /sash/api/v1/me/pro-upgrade/* does
+	// not exist upstream (zero matches in the official CN client v0.4.3
+	// app.asar) — the 领取Pro flow rides the campaigns channel now
+	// (checkin.go claimProViaCampaigns).
 
 	// Inference endpoints (COSY-signed + QoderEncoding body).
 	endpointChat   = gatewayBaseCN + "/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1"
@@ -125,18 +127,6 @@ var (
 	httpClientOnce sync.Once
 	sharedClient   *http.Client
 )
-
-// pluginVersionLiteral is the single `Version: "x.y.z"` literal the release
-// tooling rewrites (scripts/release.go globs plugins/<id>/*.go at the top
-// level only, and requires exactly one match). The registration self-reports
-// `version`, which mirrors this literal, so the built plugin can never drift
-// from the version the manifest was bumped to.
-var pluginVersionLiteral = struct {
-	Version string
-}{Version: "0.9.0"}
-
-// version is what the plugin self-reports to the host.
-var version = pluginVersionLiteral.Version
 
 // loginStatesPruneInterval bounds how often the janitor sweeps abandoned
 // login states (user started a login but never finished).
@@ -357,6 +347,18 @@ type registrationCapability struct {
 	UsagePlugin           bool                         `json:"usage_plugin"`
 }
 
+// pluginVersionLiteral is the single `Version: "x.y.z"` literal the release
+// tooling rewrites (scripts/release.go globs plugins/<id>/*.go at the top
+// level only, and requires exactly one match). The registration self-reports
+// `version`, which mirrors this literal, so the built plugin can never drift
+// from the version the manifest was bumped to.
+var pluginVersionLiteral = struct {
+	Version string
+}{Version: "0.8.64"}
+
+// version is what the plugin self-reports to the host.
+var version = pluginVersionLiteral.Version
+
 // providerName is a VAR (split flavor, issue #29): the unified build keeps
 // the default "qoder"; the split-channel builds rename it via
 // -ldflags "-X main.providerName=qoder-intl" so the plugin registers as its
@@ -374,7 +376,9 @@ func wbRegistration() registration {
 			Logo:             pluginLogoURL,
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily auto check-in at 09:00 and 21:00 local time for CN accounts (default true)."},
-				{Name: "login_region", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{regionCN, regionIntl}, Description: "Region for NEW logins: cn (qoder.com.cn, default) or intl (qoder.com). Existing accounts keep their own region; legacy qoder-cn-/qoder-intl- auth files are adopted automatically."},
+				{Name: "login_region", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{regionCN, regionIntl}, Description: "Region for NEW logins: cn (qoder.cn, default) or intl (qoder.com). Existing accounts keep their own region; legacy qoder-cn-/qoder-intl- auth files are adopted automatically."},
+				{Name: "login_dialect", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{loginDialectCockpit, loginDialectDesktop}, Description: "DEPRECATED since v0.8.45 (no-op). Both CN and Intl now always use the official desktop-client v0.4.3 wire format (client_id 732aef47-… + machine identity + /users/sign-in?biz_variant=qoder wrapper) — the official first-login newbie grant (14-day Pro trial + 300 credits) fires server-side on every login. The config key is kept for backward compat only; both values produce the same URL."},
+				{Name: "claim_unverified", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Opt-in (default false): when true, the Pro-claim flow may claim a CLAIMABLE campaigns row whose reward face value could not be verified (unreadable or absent) instead of only reporting it. Rows that reveal a readable reward are never claimed here."},
 				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Auto disable CN when credits exhausted; re-enable CN after check-in restores credits (default true)."},
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily access-token refresh at 22:00 local time to prevent Keycloak offline-session expiry (default true)."},
 				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional model list. Each item can have id, name, alias, context, max_tokens, enabled, reasoning."},
@@ -406,7 +410,7 @@ func wbRegistration() registration {
 // upstream call per account.
 const dynamicModelsCacheTTL = 5 * time.Minute
 
-// v0.8.17: the cache is scoped to the
+// v0.8.17 (fork libo0118/qoder-custom review): the cache is scoped to the
 // credential that produced it. The model list is account-specific (region
 // plus plan-specific offers), so a global single-slot cache served account
 // A's catalog to account B whenever their for_auth queries interleaved within
@@ -507,7 +511,7 @@ type storedTokens struct {
 	AccessToken   string `json:"accessToken"`      // jt- (24h) or dt- (~30d)
 	RefreshToken  string `json:"refreshToken"`     // jrt- (48h) or drt- (~1y)
 	PersonalToken string `json:"personalToken"`    // pt-..., long-lived fallback
-	ExpiresAt     int64  `json:"expiresAt"`        // active-token expiry (unix seconds)
+	ExpiresAt     int64  `json:"expiresAt"`        // active-token expiry (unix seconds; read via tokenExpiryUnix)
 	Domain        string `json:"domain"`           // realm: qoder.com.cn (cn) / qoder.com (intl)
 	Region        string `json:"region,omitempty"` // cn | intl (empty = cn for legacy files)
 }
@@ -643,7 +647,8 @@ func handleParseAuth(raw []byte) ([]byte, error) {
 	}
 	// HostConfigSummary arrives with every parse callback (startup scan and
 	// panel import). Cache the configured proxy URL so the direct HTTP path
-	// honors config.yaml proxy-url — the bridge bypass dropped that policy.
+	// honors config.yaml proxy-url — the v0.8.51 bridge bypass dropped that
+	// policy (v0.8.55).
 	rememberHostProxy(req.Host.ProxyURL)
 	// Ownership check (CPA native contract): the host routes by the file's
 	// top-level "type" field (synthesizer/file.go). Files without a type fall
@@ -779,53 +784,88 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("body build: %w", err)
 	}
 	encodedBody := qoderEncode(body)
-	httpReq, err := http.NewRequest(http.MethodPost, endpointChatFor(sa), strings.NewReader(encodedBody))
-	if err != nil {
-		return nil, err
+	// v0.8.64: honour the 10605 RESOURCE_LIMIT queue ticket — wait
+	// retryAfterSeconds and re-issue the request, bounded by
+	// queueRetryAllowed (see queue_retry.go). The ticket can arrive as the
+	// HTTP status or inside the SSE envelope as its first frame; both are
+	// recognised before anything is returned to the host, so the retry is
+	// invisible to the caller.
+	var queueWaited time.Duration
+	for attempt := 0; ; attempt++ {
+		httpReq, err := http.NewRequest(http.MethodPost, endpointChatFor(sa), strings.NewReader(encodedBody))
+		if err != nil {
+			return nil, err
+		}
+		if err := applyCosyHeaders(httpReq, sa, encodedBody, endpointChatFor(sa), upstreamModel, true); err != nil {
+			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "cosy: "+err.Error())
+			return nil, fmt.Errorf("cosy: %w", err)
+		}
+		// Compliance: route via host.http.do_stream so request-log captures the
+		// outbound call. Read entire body via the bridge, then fold SSE → completion.
+		stream, statusCode, _, err := hostHTTPDoStream(httpReq)
+		if err != nil {
+			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
+			return nil, fmt.Errorf("http_error: %w", err)
+		}
+		if statusCode >= 400 {
+			payload, _ := io.ReadAll(newHostStreamReader(stream))
+			stream.Close()
+			sig := parseQueueSignal(string(payload))
+			if sig.detected && queueRetryAllowed(attempt, queueWaited, sig.retryAfter) {
+				queueWaitFn(nil, queueWaitFor(sig.retryAfter))
+				queueWaited += queueWaitFor(sig.retryAfter)
+				continue
+			}
+			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, string(payload))
+			errOut := chatUpstreamError(statusCode, string(payload))
+			if sig.detected {
+				// The rendered queue line (not the raw envelope) feeds the
+				// classifiers — it carries the queue_limit marker
+				// recordUpstreamFailure keys on, plus the retry history.
+				if attempt > 0 {
+					errOut = fmt.Errorf("%w（已自动重试%d次共%.0fs仍排队）", errOut, attempt, queueWaited.Seconds())
+				}
+				recordUpstreamFailure(req.AuthID, cooldownModel, statusCode, errOut.Error())
+			} else {
+				recordUpstreamFailure(req.AuthID, cooldownModel, statusCode, string(payload))
+			}
+			reconcileAfterExecutorError(req.AuthID, statusCode, string(payload))
+			// 0.8.13: account-level statuses ride the error envelope so the host
+			// cooldown layer stops re-picking a drained credential.
+			return nil, upstreamStatusError(statusCode, errOut)
+		}
+		completion, err := aggregateQoderSSE(newHostStreamReader(stream), req.Model)
+		stream.Close()
+		if err != nil {
+			var fe *qoderFrameError
+			if errors.As(err, &fe) && fe.queued != nil && queueRetryAllowed(attempt, queueWaited, fe.queued.retryAfter) {
+				queueWaitFn(nil, queueWaitFor(fe.queued.retryAfter))
+				queueWaited += queueWaitFor(fe.queued.retryAfter)
+				continue
+			}
+			if attempt > 0 {
+				var fe *qoderFrameError
+				if errors.As(err, &fe) && fe.queued != nil {
+					err = fmt.Errorf("%w（已自动重试%d次共%.0fs仍排队）", err, attempt, queueWaited.Seconds())
+				}
+			}
+			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
+			recordUpstreamFailure(req.AuthID, cooldownModel, 0, err.Error())
+			return nil, err
+		}
+		publishUsage(req.Model, upstreamModel, authUID, started, usageDetailFromCompletion(completion), false, 0, "")
+		invalidateAccountCredits(req.AuthID, authUID)
+		return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
 	}
-	if err := applyCosyHeaders(httpReq, sa, encodedBody, endpointChatFor(sa), upstreamModel, true); err != nil {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, "cosy: "+err.Error())
-		return nil, fmt.Errorf("cosy: %w", err)
-	}
-	// Compliance: route via host.http.do_stream so request-log captures the
-	// outbound call. Read entire body via the bridge, then fold SSE → completion.
-	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
-	if err != nil {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
-		return nil, fmt.Errorf("http_error: %w", err)
-	}
-	defer stream.Close()
-	reader := newHostStreamReader(stream)
-	if statusCode >= 400 {
-		payload, _ := io.ReadAll(reader)
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, string(payload))
-		recordUpstreamFailure(req.AuthID, cooldownModel, statusCode, string(payload))
-		reconcileAfterExecutorError(req.AuthID, statusCode, string(payload))
-		// 0.8.13: account-level statuses ride the error envelope so the host
-		// cooldown layer stops re-picking a drained credential.
-		return nil, upstreamStatusError(statusCode, chatUpstreamError(statusCode, string(payload)))
-	}
-	completion, err := aggregateQoderSSE(reader, req.Model)
-	if err != nil {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
-		recordUpstreamFailure(req.AuthID, cooldownModel, 0, err.Error())
-		return nil, err
-	}
-	publishUsage(req.Model, upstreamModel, authUID, started, usageDetailFromCompletion(completion), false, 0, "")
-	invalidateAccountCredits(req.AuthID, authUID)
-	return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
 }
 
-// stripProviderPrefix removes the plugin's advertised model prefix from a
-// CPA-facing model name, leaving the bare alias/key the upstream recognises.
-//
-// v0.13.0: this delegates to stripModelPrefix, which removes exactly our own
-// configured/default prefix ("qoder/") instead of splitting on the first "/".
-// The generic split corrupted upstream keys that legitimately contain a slash
-// (e.g. a namespaced "vendor/model" id served by the same catalog) and, more
-// importantly, silently accepted ANY foreign prefix as our own.
+// stripProviderPrefix removes the leading "qoder/" (or any "<provider>/")
+// segment from a CPA-facing model name, leaving the bare alias/key.
 func stripProviderPrefix(model string) string {
-	return stripModelPrefix(model)
+	if i := strings.Index(model, "/"); i > 0 {
+		return model[i+1:]
+	}
+	return model
 }
 
 // executorStreamRequest wraps the host's executor.execute_stream RPC: the
@@ -893,6 +933,19 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	// client disconnects — otherwise the pump keeps reading a dead upstream until
 	// sharedHTTPClient's 120s timeout, holding a pool slot the whole time.
 	ctx, cancel := context.WithCancel(context.Background())
+	// v0.8.64: rebuildQueueRequest re-issues the upstream request for a 10605
+	// queue-ticket retry — the body reader is single-shot and the cosy signature
+	// is timestamped, so every round needs a freshly minted request.
+	rebuildQueueRequest := func() (*http.Request, error) {
+		retryReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointChatFor(sa), strings.NewReader(encodedBody))
+		if err != nil {
+			return nil, err
+		}
+		if err := applyCosyHeaders(retryReq, sa, encodedBody, endpointChatFor(sa), upstreamModel, true); err != nil {
+			return nil, err
+		}
+		return retryReq, nil
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointChatFor(sa), strings.NewReader(encodedBody))
 	if err != nil {
 		cancel()
@@ -914,7 +967,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	// hand-off: the pump owns the verdict channel and never blocks on us.
 	headTimeout := streamHeadTimeout()
 	gate := newStreamHeadGate(headTimeout)
-	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, cooldownModel, gate)
+	go pumpUpstreamStream(httpReq, rebuildQueueRequest, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, cooldownModel, gate)
 	if verdict, decided := gate.awaitHandoff(headTimeout); decided && verdict.err != nil {
 		// Nothing was delivered, so the host can rotate/cool on a real status
 		// instead of accepting a successful-looking empty answer. The status is

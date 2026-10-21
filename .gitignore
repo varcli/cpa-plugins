@@ -24,3 +24,6 @@ bin/
 
 # Browser automation scratch space
 .playwright-cli/
+
+# Local Go build cache (typecheck.sh / release.go local runs)
+.tmp-gocache/

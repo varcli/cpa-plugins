@@ -4,6 +4,9 @@
 // cliproxy provider: Trae OAuth (GetLoginGuidance + AuthCode ExchangeToken),
 // Cloud-IDE-JWT auth, Web SOLO remote chat_sessions + events SSE protocol,
 // v1 credit API. Intl has no daily check-in.
+//
+// Protocol layer based on OmniRoute/open-sse/executors/trae.ts (MIT, by
+// diegosouzapw). Translated from TypeScript to Go.
 package main
 
 /*
@@ -292,8 +295,7 @@ func intlmodelCatalogForAuth(storageJSON []byte, authID string, a *upstream.Auth
 		seen[nid] = true
 		out = append(out, pluginapi.ModelInfo{ID: nid, Name: nid, OwnedBy: intlproviderName})
 	}
-	// Always include "auto" and "work" as virtual models. v0.13.0: they carry
-	// the advertised prefix too (trae/auto, trae/work) like every other id.
+	// Always include "auto" and "work" as virtual models.
 	out = append(out,
 		pluginapi.ModelInfo{ID: variantModelID("auto", ""), Name: "auto (server pick)", OwnedBy: intlproviderName},
 		pluginapi.ModelInfo{ID: variantModelID("work", ""), Name: "work (fast mode)", OwnedBy: intlproviderName},
@@ -309,9 +311,6 @@ func intlstaticModels() []pluginapi.ModelInfo {
 	// "-intl" suffix namespaces Intl models so host routing can never send
 	// a CN/SOLO-model request to an Intl credential (or vice versa).
 	// "auto"/"work" are Intl-exclusive virtual names and stay unsuffixed.
-	// v0.13.0: ids below are bare bases; addModelPrefix supplies the
-	// advertised "trae/" namespace so the static fallback and the dynamic
-	// path register identical ids.
 	known := []string{"auto", "work", "gpt-5.2-intl", "gemini-3.1-pro-intl", "kimi-k2.5-intl", "claude-sonnet-4-5-intl"}
 	out := make([]pluginapi.ModelInfo, 0, len(known))
 	for _, id := range known {
@@ -531,8 +530,8 @@ func intlhandleStartLogin(request []byte) ([]byte, error) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	cbURL := fmt.Sprintf("http://127.0.0.1:%d/authorize", port)
 
-	// Step 3: POST GetLoginGuidance with multi-endpoint fallback.
-	// Intl tries api.marscode.com →
+	// Step 3: POST GetLoginGuidance with multi-endpoint fallback
+	// (cockpit-tools request_login_guidance). Intl tries api.marscode.com →
 	// api.trae.ai → www.trae.ai, so a single-host 404/outage no longer
 	// kills the login flow with "GetLoginGuidance upstream 404".
 	loginHost, err := intlrequestLoginGuidance(false, loginTraceID)
@@ -542,8 +541,12 @@ func intlhandleStartLogin(request []byte) ([]byte, error) {
 	}
 
 	// Step 5: Build verification URI with PKCE.
-	deviceID := newDeviceID()
-	machineID := newMachineID()
+	// v0.12.76→v0.12.77: bootstrap device only — the URI is built before
+	// the account is known; the identity registered server-side is
+	// derived PER ACCOUNT at the callback (applyDerivedIdentityIntl,
+	// device_identity.go). See the main.go counterpart.
+	ident := ensureLoginDeviceIdentity(host.AuthDir, variantIntl)
+	deviceID, machineID := ident.DeviceID, ident.MachineID
 	verificationURI := intlbuildVerificationURI(loginHost, intlverificationURIParams{
 		AuthFrom:      oauthAuthFrom,
 		PluginVersion: intlOauthPluginVersion,
@@ -562,8 +565,8 @@ func intlhandleStartLogin(request []byte) ([]byte, error) {
 		HideSaasLogin: false, // Intl non-SOLO does not hide SaaS login
 	})
 
-	// Supersede any previous pending intl login (single pending-login slot):
-	// close the old callback listener so retries
+	// Supersede any previous pending intl login (single pending-login slot,
+	// mirrors cockpit-tools): close the old callback listener so retries
 	// never accumulate listeners for the login TTL.
 	intlloginStates.Range(func(key, value any) bool {
 		if prev, ok := value.(*intlloginCtx); ok {
@@ -585,6 +588,10 @@ func intlhandleStartLogin(request []byte) ([]byte, error) {
 		codeChallenge: codeChallenge,
 		deviceID:      deviceID,
 		machineID:     machineID,
+		// v0.12.76: 登录起点解析出的设备密钥对（稳定身份的一部分），
+		// 交换点复用并随凭证落盘。
+		devicePublicKey:  ident.DevicePublicKey,
+		devicePrivateKey: ident.DevicePrivateKey,
 	})
 
 	// v0.12.17: disk-persisted pending login — the paste box keeps working
@@ -598,9 +605,13 @@ func intlhandleStartLogin(request []byte) ([]byte, error) {
 		CodeChallenge: codeChallenge,
 		DeviceID:      deviceID,
 		MachineID:     machineID,
-		AuthDir:       host.AuthDir,
-		CreatedAt:     time.Now().Unix(),
-		ExpiresAt:     time.Now().Add(loginTTL).Unix(),
+		// v0.12.76: 稳定设备身份的密钥对随 pending 记录落盘，进程重启
+		// 后的 self-complete 仍复用同一对（不再现铸）。
+		DevicePublicKey:  ident.DevicePublicKey,
+		DevicePrivateKey: ident.DevicePrivateKey,
+		AuthDir:          host.AuthDir,
+		CreatedAt:        time.Now().Unix(),
+		ExpiresAt:        time.Now().Add(loginTTL).Unix(),
 	})
 
 	if ln != nil {
@@ -648,16 +659,17 @@ func intlhandlePollLogin(request []byte) ([]byte, error) {
 	select {
 	case <-lc.done:
 	default:
-		// Always probe the host-written callback file — see the note in
-		// main.go: gating this on lc.listener == nil made it unreachable for
-		// live logins, which broke the built-in flow on remote hosts.
-		if code, cbErr, ok := readHostCallbackFile(lc.authDir, state); ok {
-			if cbErr != "" {
-				lc.err = fmt.Errorf("oauth callback error: %s", cbErr)
-			} else if code != "" {
-				lc.authCode = code
+		if lc.listener == nil {
+			// Resource-callback flow: pick up the host oauth-callback
+			// file if the redirect landed there instead of our route.
+			if code, cbErr, ok := readHostCallbackFile(lc.authDir, state); ok {
+				if cbErr != "" {
+					lc.err = fmt.Errorf("oauth callback error: %s", cbErr)
+				} else if code != "" {
+					lc.authCode = code
+				}
+				intlCompleteLogin(lc)
 			}
-			intlCompleteLogin(lc)
 		}
 		select {
 		case <-lc.done:
@@ -689,16 +701,19 @@ func intlhandlePollLogin(request []byte) ([]byte, error) {
 		})
 	}
 	// Exchange authCode for tokens via the official account-API origins
-	// (v0.12.24): the official
+	// (cockpit-tools candidate_account_api_origins, v0.12.24): the official
 	// client exchanges ONLY against grow-* origins (SG default; USTTP via
 	// the callback userTag) — the callback loginHost (api-sg-central.trae.ai
 	// etc.) is a business-API host and answers an auth code with HTTP 401
-	// business code 20405 (live-verified 2026-09-04). DeviceInfo
-	// reuses the SAME machine/device ids
+	// business code 20405 (live-verified 2026-09-04). DeviceInfo mirrors
+	// build_official_device_info, reuses the SAME machine/device ids
 	// embedded in the login URL, and carries a fresh per-login EC P-256
 	// DevicePublicKey (an empty value 401s the same way — the official
 	// client uploads a bound public key on first exchange).
-	pubKeyPEM, privKeyPEM, keyErr := generateDeviceKeyPair()
+	// v0.12.76: the pair now comes from the stable login identity
+	// (carried from start-login / restored from the pending record)
+	// instead of a fresh mint per exchange.
+	pubKeyPEM, privKeyPEM, keyErr := deviceKeysForLogin(lc.devicePublicKey, lc.devicePrivateKey, lc.authDir, variantIntl)
 	if keyErr != nil {
 		// An exchange without the key pair would fail with 20405 anyway;
 		// fail here with the precise cause instead.
@@ -859,18 +874,24 @@ func intlhandleRefreshAuth(request []byte) ([]byte, error) {
 	storageJSON, _ := json.MarshalIndent(map[string]any{
 		"type":     intlproviderName,
 		"provider": intlproviderName,
+		// v0.12.72: carry the device identity + key material through refresh —
+		// this map REPLACES the auth file, so anything omitted here is lost.
 		"auth": map[string]any{
-			"accessToken":  a.AccessToken,
-			"refreshToken": a.RefreshToken,
-			"expiresAt":    a.ExpiresAt,
-			"domain":       a.Domain,
-			"apiHost":      a.APIHost,
-			"variant":      "intl",
-			"region":       a.Region,
-			"scope":        a.Scope,
-			"tenant":       a.Tenant,
-			"appLanguage":  a.AppLanguage,
-			"appVersion":   a.AppVersion,
+			"accessToken":      a.AccessToken,
+			"refreshToken":     a.RefreshToken,
+			"expiresAt":        a.ExpiresAt,
+			"domain":           a.Domain,
+			"apiHost":          a.APIHost,
+			"machineId":        a.MachineID,
+			"deviceId":         a.DeviceID,
+			"devicePublicKey":  a.DevicePublicKey,
+			"devicePrivateKey": a.DevicePrivateKey,
+			"variant":          "intl",
+			"region":           a.Region,
+			"scope":            a.Scope,
+			"tenant":           a.Tenant,
+			"appLanguage":      a.AppLanguage,
+			"appVersion":       a.AppVersion,
 		},
 		"account": map[string]any{
 			"uid":          a.UID,
@@ -1117,7 +1138,7 @@ type intlverificationURIParams struct {
 
 // intlbuildVerificationURI constructs the browser-facing OAuth URL.
 func intlbuildVerificationURI(loginHost string, p intlverificationURIParams) string {
-	// intlensureHTTPSScheme: a scheme-less
+	// intlensureHTTPSScheme mirrors cockpit-tools ensure_https_url: a scheme-less
 	// URL would be resolved as a RELATIVE path by the panel browser and hit
 	// the CPA server itself → "404 page not found".
 	loginHost = intlensureHTTPSScheme(loginHost)
@@ -1168,14 +1189,17 @@ type intlloginCtx struct {
 	codeChallenge string
 	deviceID      string
 	machineID     string
-	loginHost     string
-	// userTag echoes the callback's userTag parameter (v0.12.24):
-	// USTTP accounts exchange against the US
+	// v0.12.76: 登录起点解析出的设备密钥对（稳定身份的一部分），随凭证落盘。
+	devicePublicKey  string
+	devicePrivateKey string
+	loginHost        string
+	// userTag echoes the callback's userTag parameter (v0.12.24, cockpit-tools
+	// TraeCallbackPayload.user_tag): USTTP accounts exchange against the US
 	// origin (grow-normal.traeapi.us) instead of the SG default.
 	userTag  string
 	authCode string
-	// cbUID/cbNickname: the callback's userInfo identity echo (v0.12.25)
-	// — stable per-account file
+	// cbUID/cbNickname: the callback's userInfo identity echo (v0.12.25,
+	// cockpit-tools TraeCallbackPayload.userInfo) — stable per-account file
 	// identity when GetUserInfo fails (duplicate-account fix, intl parity).
 	cbUID      string
 	cbNickname string
@@ -1224,6 +1248,12 @@ func intlacceptCallback(state string) {
 			return
 		}
 		if intlHandleCallbackConn(conn, lc) {
+			// v0.12.74：监听器路径与 resource 路由对齐（intl）——回调
+			// 已解决流程但宿主 poll 停止抽干时，此前无人推进登录，
+			// pending 卡满 15 分钟 TTL 且 janitor 回收不记 outcome
+			//（issue #38 实录，cn 侧同修）。selfOnce 保证幂等，grace
+			// 语义与 resource 路由完全一致。
+			spawnSelfCompleteIntl(lc)
 			closeListener(lc.listener)
 			return
 		}
@@ -1286,12 +1316,23 @@ func intlHandleCallbackConn(conn net.Conn, lc *intlloginCtx) bool {
 	}
 
 	// userTag (v0.12.24): USTTP accounts exchange against the US origin
-	// (grow-normal.traeapi.us) instead of the SG default.
+	// (grow-normal.traeapi.us) instead of the SG default (cockpit-tools
+	// TraeCallbackPayload.user_tag).
 	for _, k := range []string{"userTag", "user_tag", "UserTag"} {
 		if v := vals.Get(k); v != "" {
 			lc.userTag = v
 			break
 		}
+	}
+
+	// userInfo echo (v0.12.77 parity with the resource-callback route +
+	// per-account derived device identity, see handleCallbackConn).
+	if id := parseCallbackIdentity(vals); id.UID != "" {
+		lc.cbUID = id.UID
+		if id.Nickname != "" {
+			lc.cbNickname = id.Nickname
+		}
+		applyDerivedIdentityIntl(lc, id.UID)
 	}
 
 	// Auth code (multiple names; first non-empty wins).

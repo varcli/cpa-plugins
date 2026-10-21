@@ -141,18 +141,37 @@ func TestRefreshTokenIfNeededRefreshesExpired(t *testing.T) {
 	}
 }
 
+// TestRefreshTokenUsesAuthAPIHost: v0.12.74 magpie 对齐改写——绑定续期
+// （第一优先）固定打 boundExchangeHost（api.trae.cn），与账号 apiHost 无关
+// （magpie site.hosts.auth 单源语义）；绑定被拒后的 legacy /cloudide 路径
+// 仍以 auth.apiHost 为第一候选（多源 fallback 行为保留）。
 func TestRefreshTokenUsesAuthAPIHost(t *testing.T) {
-	var gotHost string
+	var boundHosts, legacyHosts []string
 	c := testClient(func(r *http.Request) (*http.Response, error) {
-		gotHost = r.URL.Scheme + "://" + r.URL.Host
-		return jsonResp(200, `{"Result":{"Token":"newat"}}`), nil
+		if r.URL.Path == epExchangeBound {
+			boundHosts = append(boundHosts, r.URL.Scheme+"://"+r.URL.Host)
+			return jsonResp(400, `{"code":10101,"message":"refresh token is not matched to the client"}`), nil
+		}
+		if strings.HasSuffix(r.URL.Path, EpExchange) {
+			legacyHosts = append(legacyHosts, r.URL.Scheme+"://"+r.URL.Host)
+			return jsonResp(200, `{"Result":{"Token":"newat"}}`), nil
+		}
+		return nil, errors.New("unexpected path " + r.URL.Path)
 	})
 	a := &auth.Auth{AccessToken: "at", RefreshToken: "rt", ExpiresAt: 1, APIHost: "https://custom.example"}
 	if err := c.RefreshToken(a); err != nil {
 		t.Fatal(err)
 	}
-	if gotHost != "https://custom.example" {
-		t.Errorf("host=%s want auth.apiHost", gotHost)
+	if len(boundHosts) != 2 {
+		t.Fatalf("bound attempts = %v, want exactly 2 on the identity ladder", boundHosts)
+	}
+	for _, h := range boundHosts {
+		if h != boundExchangeHost {
+			t.Errorf("bound attempt host = %q, want the single magpie host %q", h, boundExchangeHost)
+		}
+	}
+	if len(legacyHosts) == 0 || legacyHosts[0] != "https://custom.example" {
+		t.Errorf("legacy hosts = %v, want auth.apiHost first", legacyHosts)
 	}
 }
 
@@ -239,7 +258,7 @@ func TestUserEntUsageAggregation(t *testing.T) {
 			return nil, errors.New("missing auth header")
 		}
 		// v0.12.28: quota 走真实字段 basic_usage_limit（credits_limit 在
-		// v2 API 中不存在，上游从不读取它）。
+		// v2 API 中不存在，上游 cockpit-tools 从不读取它）。
 		return jsonResp(200, `{"is_credits_billing":true,"user_entitlement_pack_list":[
                         {"entitlement_base_info":{"product_type":6,"quota":{"basic_usage_limit":2000}},"usage":{"basic_usage_amount":300}},
                         {"entitlement_base_info":{"product_type":0,"quota":{"basic_usage_limit":500}}}
@@ -371,9 +390,9 @@ func TestCheckinStatusAndClaim(t *testing.T) {
 }
 
 func TestCheckinAuthSchemeAlignment(t *testing.T) {
-	// v0.12.38: 签到鉴权双方案——Cloud-IDE-JWT 优先（官方客户端实证；
-	// v0.12.34 我方 status 实测 code=0），Bearer 回退
-	// （该类 token 类别）。pay/usage 恒为 Cloud-IDE-JWT。
+	// v0.12.38: 签到鉴权双方案——Cloud-IDE-JWT 优先（官方客户端逆向实证
+	// FINDINGS §五；v0.12.34 我方 status 实测 code=0），Bearer 回退
+	// （cockpit-tools rs:2761,2859 的 token 类别）。pay/usage 恒为 Cloud-IDE-JWT。
 	a := &auth.Auth{AccessToken: "tok", DeviceID: "dev-1"}
 	req, err := ugCheckinRequest(a, http.MethodPost, "https://api.trae.cn/x", "{}", UgSchemeCloudIDEJWT, "")
 	if err != nil {
@@ -581,8 +600,8 @@ func TestCheckinBizCodeNonZero(t *testing.T) {
 }
 
 func TestPayStatusParsing(t *testing.T) {
-	// v0.12.29: ide_user_pay_status 容错解析 —— 三段回退
-	// （detail → entitlementInfo → originPayStatusData）。Free CN/SOLO
+	// v0.12.29: ide_user_pay_status 容错解析 —— 对齐上游 getCnEntitlementDetailFields
+	// 的三段回退（detail → entitlementInfo → originPayStatusData）。Free CN/SOLO
 	// 账户的 ent_usage pack 无 quota，快请求/月与 SOLO 并发只能从这里拿。
 	c := testClient(func(r *http.Request) (*http.Response, error) {
 		if !strings.HasSuffix(r.URL.Path, EpPayStatus) {

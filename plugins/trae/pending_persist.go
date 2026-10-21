@@ -114,9 +114,13 @@ type pendingLoginRecord struct {
 	CodeChallenge string `json:"code_challenge,omitempty"`
 	DeviceID      string `json:"device_id"`
 	MachineID     string `json:"machine_id"`
-	AuthDir       string `json:"auth_dir"`
-	CreatedAt     int64  `json:"created_at"`
-	ExpiresAt     int64  `json:"expires_at"`
+	// v0.12.76: 稳定设备身份的密钥对（登录起点解析）随 pending 记录落盘，
+	// 重启后的 self-complete 复用同一对，不再现铸。
+	DevicePublicKey  string `json:"device_public_key,omitempty"`
+	DevicePrivateKey string `json:"device_private_key,omitempty"`
+	AuthDir          string `json:"auth_dir"`
+	CreatedAt        int64  `json:"created_at"`
+	ExpiresAt        int64  `json:"expires_at"`
 }
 
 // authDirCache remembers the last host-provided AuthDir. The resource routes
@@ -264,6 +268,7 @@ func restorePendingLoginState(state string) string {
 			loginTraceID: rec.State, codeVerifier: rec.CodeVerifier,
 			codeChallenge: rec.CodeChallenge, deviceID: rec.DeviceID,
 			machineID: rec.MachineID, loginHost: rec.LoginHost, authDir: dir,
+			devicePublicKey: rec.DevicePublicKey, devicePrivateKey: rec.DevicePrivateKey,
 			restored: true,
 		})
 		return rec.State
@@ -273,6 +278,7 @@ func restorePendingLoginState(state string) string {
 			expires: expires, loginTraceID: rec.State, codeVerifier: rec.CodeVerifier,
 			codeChallenge: rec.CodeChallenge, deviceID: rec.DeviceID,
 			machineID: rec.MachineID, authDir: dir,
+			devicePublicKey: rec.DevicePublicKey, devicePrivateKey: rec.DevicePrivateKey,
 			restored: true,
 		})
 		return rec.State
@@ -352,6 +358,13 @@ func selfCompleteCN(lc *loginCtx, source string) {
 		loginStates.Delete(state)
 		log.Printf("trae self-complete (%s, %s) failed: %s", source, state, msg)
 	}
+	// v0.12.74：监听器路径也会 arm self-complete（issue #38 修复），而
+	// handleCallbackConn 的错误回调（error=…/isRedirect=false）只置 lc.err
+	// ——先如实回显回调错误，别落成误导性的「no authCode/refreshToken」。
+	if lc.err != nil {
+		fail(lc.err.Error())
+		return
+	}
 	if lc.authCode == "" && lc.refreshToken == "" {
 		fail("no authCode/refreshToken after restore")
 		return
@@ -367,6 +380,10 @@ func selfCompleteCN(lc *loginCtx, source string) {
 			Domain:       "trae.cn",
 			MachineID:    lc.machineID,
 			DeviceID:     lc.deviceID,
+			// v0.12.77: 携带登录设备密钥对（回调 echo 过 uid 时为按账号
+			// 派生身份），绑定续期以该设备签名，不再落回裸续期。
+			DevicePublicKey:  lc.devicePublicKey,
+			DevicePrivateKey: lc.devicePrivateKey,
 			// v0.12.60: 同 oauth_callback——refreshLocked 以谱系选 OAuth
 			// ClientID，裸 Auth 缺 variant 会把 SOLO 凭证换发成 cn 类。
 			Variant: lc.variant,
@@ -377,7 +394,9 @@ func selfCompleteCN(lc *loginCtx, source string) {
 			accessToken, refreshToken, expiresAt = a.AccessToken, a.RefreshToken, a.ExpiresAt
 		}
 	} else {
-		pubKeyPEM, privKeyPEM, keyErr := generateDeviceKeyPair()
+		// v0.12.76: 复用登录起点携带的稳定身份密钥对（无则回退解析
+		// 稳定身份），不再每次交换现铸新密钥。
+		pubKeyPEM, privKeyPEM, keyErr := deviceKeysForLogin(lc.devicePublicKey, lc.devicePrivateKey, lc.authDir, lc.variant)
 		if keyErr != nil {
 			fail(fmt.Sprintf("device key pair: %v", keyErr))
 			return
@@ -497,11 +516,19 @@ func selfCompleteIntl(lc *intlloginCtx, source string) {
 		intlloginStates.Delete(state)
 		log.Printf("trae-intl self-complete (%s, %s) failed: %s", source, state, msg)
 	}
+	// v0.12.74：监听器路径也会 arm self-complete（issue #38 修复，intl 同修）
+	// ——错误回调只置 lc.err，先如实回显，别落成「no authCode」。
+	if lc.err != nil {
+		fail(lc.err.Error())
+		return
+	}
 	if lc.authCode == "" {
 		fail("no authCode after restore")
 		return
 	}
-	pubKeyPEM, privKeyPEM, keyErr := generateDeviceKeyPair()
+	// v0.12.76: 复用登录起点携带的稳定身份密钥对（无则回退解析稳定
+	// 身份），不再每次交换现铸新密钥。
+	pubKeyPEM, privKeyPEM, keyErr := deviceKeysForLogin(lc.devicePublicKey, lc.devicePrivateKey, lc.authDir, variantIntl)
 	if keyErr != nil {
 		fail(fmt.Sprintf("device key pair: %v", keyErr))
 		return

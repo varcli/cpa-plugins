@@ -65,7 +65,8 @@ func parseLoginHostContext(request []byte) loginHostContext {
 // resourceCallbackPath is the plugin resource route serving the OAuth
 // callback (registered in managementRegistration WITHOUT a Menu label: the
 // host skips Menu-less resources in its UI menu list, so the route is
-// reachable without adding a second sidebar entry).
+// reachable without adding a second sidebar entry). Var (split flavor):
+// providerName became injectable — split builds register their own routes.
 var resourceCallbackPath = "/v0/resource/plugins/" + providerName + "/oauth_callback"
 
 // resourceSubmitPath is the paste-to-complete fallback route (v0.12.16).
@@ -148,17 +149,18 @@ type callbackParams struct {
 	loginHost    string
 	refreshToken string
 	authCode     string
-	// userTag echoes the callback's userTag (v0.12.24): routes USTTP intl
-	// accounts to the US exchange origin.
+	// userTag echoes the callback's userTag (v0.12.24, cockpit-tools
+	// TraeCallbackPayload.user_tag): routes USTTP intl accounts to the US
+	// exchange origin.
 	userTag string
-	// identity echoes the callback's userInfo parameter (v0.12.25): the
-	// account's real
+	// identity echoes the callback's userInfo parameter (v0.12.25,
+	// cockpit-tools TraeCallbackPayload.userInfo): the account's real
 	// UID/ScreenName, used as the file identity whenever the fresh
 	// GetUserInfo call fails — the duplicate-account fix.
 	identity cbIdentity
 }
 
-// parseCallbackParams applies the callback parameter
+// parseCallbackParams applies the cockpit-tools callback parameter
 // precedence for the resource callback route.
 func parseCallbackParams(vals url.Values) callbackParams {
 	var p callbackParams
@@ -215,17 +217,17 @@ func parseCallbackParams(vals url.Values) callbackParams {
 // resolveCallbackState determines which in-flight login a callback request
 // belongs to (v0.12.12). The REAL Trae authorization-page redirect does NOT
 // echo a "state" parameter — the plugin never sends one. It echoes the login
-// session id the plugin DID send: login_trace_id (loginTraceID /
-// loginTraceId / login_trace_id / trace_id are parsed out of the
-// callback payload).
+// session id the plugin DID send: login_trace_id (cockpit-tools parses
+// loginTraceID / loginTraceId / login_trace_id / trace_id out of the
+// callback payload — TraeCallbackPayload.login_trace_id, trae_oauth.rs:1671).
 // The old handler required "state" and rejected every real redirect with
 // "missing state parameter" — user-visible as "收不到回调链接". The test
 // suite masked this because its simulated callbacks always passed state.
 // Resolution order:
 //  1. "state" — the host-driven oauth-callback convention (kept for compat).
 //  2. login_trace_id variants — the real Trae redirect echo.
-//  3. exactly-one live login across both maps — the callback port IS the
-//     login identity.
+//  3. exactly-one live login across both maps — mirrors cockpit-tools'
+//     port-scoped listener, where the callback port IS the login identity.
 func resolveCallbackState(vals url.Values) string {
 	if s := strings.TrimSpace(vals.Get("state")); s != "" {
 		return s
@@ -276,8 +278,8 @@ func handleOAuthCallbackResource(req pluginapi.ManagementRequest) []byte {
 	}
 	// Bare hit with NO params at all (browser prefetch, user pasting the
 	// plain callback URL, favicon probes): answer pending and keep the
-	// in-flight login untouched — the login keeps waiting on an empty
-	// query.
+	// in-flight login untouched — cockpit-tools keeps waiting on an empty
+	// query (trae_oauth.rs:1611-1624).
 	if len(vals) == 0 {
 		return callbackResultHTML("Waiting for authorization",
 			"This URL is the Trae OAuth redirect target. Complete the login in the authorization window.")
@@ -301,7 +303,7 @@ func handleOAuthCallbackResource(req pluginapi.ManagementRequest) []byte {
 		p := parseCallbackParams(vals)
 		if p.loginHost != "" {
 			lc.loginHost = p.loginHost
-		} // else keep the start-login host (fallback_login_host)
+		} // else keep the start-login host (cockpit-tools fallback_login_host)
 		if p.userTag != "" {
 			lc.userTag = p.userTag
 		}
@@ -309,6 +311,10 @@ func handleOAuthCallbackResource(req pluginapi.ManagementRequest) []byte {
 		// save paths (last-writer wins per field, GetUserInfo still wins).
 		if p.identity.UID != "" {
 			lc.cbUID = p.identity.UID
+			// v0.12.77: the callback revealed WHO is logging in —
+			// switch the login onto that account's derived device
+			// identity before any exchange point runs.
+			applyDerivedIdentityCN(lc, p.identity.UID)
 		}
 		if p.identity.Nickname != "" {
 			lc.cbNickname = p.identity.Nickname
@@ -347,6 +353,9 @@ func handleOAuthCallbackResource(req pluginapi.ManagementRequest) []byte {
 		// v0.12.25: intl parity — userInfo echo into the save path.
 		if p.identity.UID != "" {
 			lc.cbUID = p.identity.UID
+			// v0.12.77: per-account derived device identity (intl
+			// counterpart of the CN branch above).
+			applyDerivedIdentityIntl(lc, p.identity.UID)
 		}
 		if p.identity.Nickname != "" {
 			lc.cbNickname = p.identity.Nickname

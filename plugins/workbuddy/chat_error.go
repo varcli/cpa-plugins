@@ -156,8 +156,15 @@ func (e *statusError) Unwrap() error   { return e.err }
 // cooldown — unchanged from pre-0.9.17 behavior).
 func upstreamStatusError(status int, payload string, err error) error {
 	switch {
+	// 11-128 is request-shaped (see isChannelRiskControl) yet used to be
+	// returned without a status code, so the host read it as a credential
+	// failure: it walked every account, cooled all of them, and the next
+	// calls died with "auth_unavailable" (503) although the credentials were
+	// fine. Attaching 400 makes the host classify it as request-scoped
+	// (clienterror.IsRequestFault) and stop after the first rejection.
+	case isChannelRiskControl(status, payload):
+		return &statusError{status: http.StatusBadRequest, err: err}
 	case isPromptTooLong(status, payload),
-		isChannelRiskControl(status, payload),
 		isModelNotRegistered(status, payload),
 		isModelScopedRateLimit(status, payload),
 		isWafBlocked(status, payload):
@@ -225,6 +232,13 @@ func streamFaultStatus(payload string) int {
 	if isModelScopedRateLimit(http.StatusTooManyRequests, payload) {
 		return 0
 	}
+	// Issue #35: 免费模型的每日限额帧（200 + 错误帧，形状未知→信封无关词族
+	// 分类）→ 429。这让开启 stream_head_timeout 的用户与同步路径拿到带状态
+	// 的失败信封，宿主冷却层可正确归属；per-(uid, model) 的 fast-fail 由
+	// noteStreamFrameLimit 武装。6004 优先级不变（上面先判，它保持 status 0）。
+	if isDailyQuotaFrame(payload) {
+		return http.StatusTooManyRequests
+	}
 	low := strings.ToLower(payload)
 	switch {
 	case containsAny(low, "unauthorized", "invalid token", "token expired", "未授权", "登录已失效", "登录失效"):
@@ -243,7 +257,7 @@ func streamFaultStatus(payload string) int {
 }
 
 // inputTooLargeMarkers 过大错误文案词族（除 11115/"prompt is too long"
-// 外的变体）。大小写不敏感。
+// 外的变体；对齐 qoder 0.8.11 chatSizeMarkers）。大小写不敏感。
 var inputTooLargeMarkers = []string{
 	"maximum context length",
 	"context length exceeded",
@@ -323,9 +337,10 @@ func formatThousands(n int64) string {
 }
 
 // isPromptTooLong reports the 11115 prompt-overflow rejection (400/404/413 +
-// code 11115 / "prompt is too long" wording). Context overflow is a
-// REQUEST-level problem — the same body overflows on any account — so the
-// message must say so instead of implying an account failure.
+// code 11115 / "prompt is too long" wording). Same marker philosophy as the
+// wb2api Classify: context overflow is a REQUEST-level problem — the same
+// body overflows on any account — so the message must say so instead of
+// implying an account failure.
 func isPromptTooLong(statusCode int, payload string) bool {
 	// v0.9.15: 413 语义唯一（请求体/输入超限）——网关层 HTML/空体拒绝
 	//（无业务信封）也算，请求级问题一律给明确文案。
@@ -344,12 +359,12 @@ func isPromptTooLong(statusCode int, payload string) bool {
 		return true
 	}
 	return strings.Contains(low, `"code":11115`) || strings.Contains(low, `"code":"11115"`) ||
-		// v0.9.15: 扩大过大词族。
+		// v0.9.15: 扩大过大词族（对齐 qoder 0.8.11 chatSizeMarkers）。
 		containsInputTooLargeMarker(low)
 }
 
 // isChannelRiskControl reports the Tencent channel risk-control rejection
-// (code 11128). Production evidence (2026-09): the
+// (code 11128). Production evidence (RobbsLuo/Coding2API 2026-09): the
 // backend rejects requests carrying the OpenAI `developer` role, missing
 // official-CLI request-shape fields, or bursty frequency with this code —
 // a request-shaped/transient problem, not an account failure.
@@ -383,7 +398,7 @@ func isWafBlocked(statusCode int, payload string) bool {
 }
 
 // retryAfterHint renders the upstream retry-guidance headers as a hint
-// suffix, following the Retry-After family: Retry-After (seconds) →
+// suffix, mirroring the wb2api Retry-After family: Retry-After (seconds) →
 // Retry-After-Ms (milliseconds) → X-RateLimit-Reset (epoch seconds or
 // milliseconds; relative seconds below 1e9 also accepted). Sanity-capped at
 // 2h; absent/invalid values yield "" — never invent a wait time.
@@ -439,6 +454,12 @@ func translateChatUpstreamErrorFull(statusCode int, payload string, sa *storedAu
 		// declared reset instant and upstream's switch-models advice.
 		resetAt, resetKnown := parseRateLimitResetAt(payload)
 		return fmt.Errorf("%s | raw: %s", modelScopedRateLimitCopy(resetAt, resetKnown),
+			truncateRedacted(payload, 200))
+	case isDailyQuotaFrame(payload):
+		// Issue #35: 每日限额得到同结构但语义明确的“今日免费额度”文案
+		//（重置时刻优先取上游声明，否则 UTC+8 零点）——不写这条，用户只能
+		// 看到裸 "upstream 429: {json}"，既看不出是每日额度也不知何时恢复。
+		return fmt.Errorf("%s | raw: %s", dailyQuotaLimitCopy(payload),
 			truncateRedacted(payload, 200))
 	case isPromptTooLong(statusCode, payload):
 		// v0.9.16: 11115 码提及条件化——413 裸 HTML/空体与其他词族命中时

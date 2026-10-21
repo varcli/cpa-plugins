@@ -70,7 +70,17 @@ type checkinSummary struct {
 // with a transient error (HTTP 5xx or transport error). codebuddy.cn
 // intermittently returns 500s; without a retry a single hiccup surfaces as a
 // panel error even though the very next request would succeed.
-var billingRetryDelays = []time.Duration{300 * time.Millisecond, 900 * time.Millisecond}
+//
+// v0.9.51: 4 attempts spanning ~4.1s of backoff (was 3 attempts / 1.2s).
+// Field reports show EOF bursts lasting several seconds (gateway/NAT/
+// cross-border flaps); retries now also alternate onto the rescue transport
+// (fresh connection, tcp4-first), so a wider window materially raises the
+// odds one attempt lands. Still bounded: worst realistic case ≈ 4×15s + 4.1s.
+var billingRetryDelays = []time.Duration{
+	400 * time.Millisecond,
+	1200 * time.Millisecond,
+	2500 * time.Millisecond,
+}
 
 // CapacityRemain/Used/Size         — lifetime package totals (Used often ≈0
 //
@@ -221,6 +231,13 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveNow(req)))
 	case req.Method == http.MethodGet && path == base+"/keepalive/status":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveStatus()))
+	case req.Method == http.MethodGet && path == base+"/cooldowns":
+		// Issue #35 (v0.9.57): the per-(credential, model) cooldown table —
+		// list (all, or one auth via ?auth_id=) and clear are the panel's
+		// "give this pair another chance now" actions, same as qoder.
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCooldownList(req)))
+	case req.Method == http.MethodPost && path == base+"/cooldowns/clear":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCooldownClear(req)))
 	case req.Method == http.MethodGet && path == base+"/models/groups":
 		status, payload := handleModelGroupsQuery(req)
 		return okEnvelope(mgmtJSONResponse(status, payload))

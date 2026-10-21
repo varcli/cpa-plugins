@@ -4,8 +4,6 @@
 // provider: it performs the CodeBuddy web login flow, refreshes access
 // tokens, and forwards OpenAI-compatible chat completion requests to the
 // upstream /v2/chat/completions endpoint.
-//
-// Built with -buildmode=c-shared and exports the cliproxy C ABI entry points.
 package main
 
 /*
@@ -105,9 +103,15 @@ const (
 // CodeBuddy associates the browser login with the state issued at auth/state,
 // so we must reuse the same cookie jar across the state request and the polls.
 type loginCtx struct {
-	client  *http.Client
-	region  string // login realm: cn | intl (merged codebuddy-intl)
-	expires time.Time
+	client *http.Client
+	region string // login realm: cn | intl (merged codebuddy-intl)
+	// platform 记录该次登录实际使用的客户端平台（CLI/ide，issue #36）：
+	// Intl 入口只有 IDE 客户端，CN 入口跟 login_platform 配置。成功后写进
+	// sa.Auth.LoginPlatform，让 token 血统（哪个客户端族铸造）与后续聊天的
+	// 请求方言（头族）一致——不持久化的话 IDE 流程铸造的 token 会以 CLI
+	// 头族聊天，正是 #26/#38 类错配在 workbuddy 的镜像。
+	platform string
+	expires  time.Time
 }
 
 var (
@@ -116,7 +120,7 @@ var (
 	httpClientOnce   sync.Once
 	sharedClient     *http.Client
 	rescueClientOnce sync.Once
-	rescueClient     *http.Client // fresh-conn transport for billing retries
+	rescueClient     *http.Client // fresh-conn/tcp4-first transport for billing retries
 )
 
 // loginStatesPruneInterval bounds how often the janitor sweeps abandoned
@@ -337,12 +341,24 @@ type registrationCapability struct {
 	UsagePlugin           bool                         `json:"usage_plugin"`
 }
 
+// pluginVersionLiteral is the single `Version: "x.y.z"` literal the release
+// tooling rewrites (scripts/release.go globs plugins/<id>/*.go at the top
+// level only, and requires exactly one match). The registration self-reports
+// `version`, which mirrors this literal, so the built plugin can never drift
+// from the version the manifest was bumped to.
+var pluginVersionLiteral = struct {
+	Version string
+}{Version: "0.9.62"}
+
+// version is what the plugin self-reports to the host.
+var version = pluginVersionLiteral.Version
+
 func wbRegistration() registration {
 	return registration{
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             providerName,
-			Version:          "0.8.1",
+			Version:          version,
 			Author:           "varcli",
 			GitHubRepository: "https://github.com/varcli/cpa-plugins",
 			Logo:             pluginLogoURL,
@@ -359,10 +375,10 @@ func wbRegistration() registration {
 				{Name: "models_intl", Type: pluginapi.ConfigFieldTypeString, Description: "Leave empty (recommended): each Intl account then supports exactly what codebuddy.ai returns for its credential token (5-min cache) - no pre-filled guessing, so unsupported models are never advertised or routed. Optional comma-separated upstream model IDs to pin/override the Intl model output."},
 				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "Multi-account selection: off (defer to built-in, default) or credits (pick highest remaining). WARNING: when off + lifecycle_auto=false, exhausted accounts may still be routed — enable lifecycle_auto or set scheduler_mode=credits."},
 				{Name: "stream_head_timeout", Type: pluginapi.ConfigFieldTypeInteger, Description: "Opt-in async-stream head gate, in seconds (default 0 = disabled, unchanged behavior). When > 0 the executor waits up to this long for the first decisive upstream event before opening the host stream, so a pre-answer failure (upstream >=400 or an error frame before the model starts answering) returns as a normal failed request with an HTTP status instead of a lossy in-band text error. Never blocks longer than this, and a silent stream is released normally."},
-				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional override of CPAMP usage import URL (default http://cpa-manager-plus:18317/v0/management/usage/import; also env USAGE_REPORT_URL)."},
-				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CPAMP admin key override. Prefer auto-detect from env CPAMP_ADMIN_KEY / USAGE_REPORT_KEY or secret file /run/secrets/cpamp_admin_key."},
 				{Name: "model_prefix", Type: pluginapi.ConfigFieldTypeString, Description: "Prefix applied to every registered model id (default workbuddy/). Keeps workbuddy's models in their own group on the CPA models page and prevents id collisions with another plugin or a native provider. A missing trailing slash is added."},
 				{Name: "enable_model_prefix", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Whether to add model_prefix to registered model ids (default true). Turn it off to advertise the bare upstream ids; the executor then forwards bare ids too."},
+				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional override of CPAMP usage import URL (default http://cpa-manager-plus:18317/v0/management/usage/import; also env USAGE_REPORT_URL)."},
+				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CPAMP admin key override. Prefer auto-detect from env CPAMP_ADMIN_KEY / USAGE_REPORT_KEY or secret file /run/secrets/cpamp_admin_key."},
 			},
 		},
 		Capabilities: registrationCapability{
@@ -592,7 +608,7 @@ func backendHeaders(req *http.Request, sa *storedAuth) {
 	commonHeaders(req)
 	applyPlatformHeaders(req, platformForAuth(sa))
 	applyRealmHeaders(req, sa)
-	// v0.9.29: the official WorkBuddy
+	// v0.9.29 (fork libo0118/qoder-custom review): the official WorkBuddy
 	// 5.5.6 desktop's bundled CLI sends these identity headers on chat calls;
 	// without them the official usage history's client column stays blank for
 	// CLI-login accounts. Only the blank case is filled — the adopted
@@ -603,6 +619,33 @@ func backendHeaders(req *http.Request, sa *storedAuth) {
 		req.Header.Set("X-IDE-Type", "WorkBuddy")
 		req.Header.Set("X-IDE-Version", "5.5.6")
 	}
+	// 2026-10-19 (PR #43): the Global realm's gateway rejects otherwise-valid
+	// streaming chat calls with 11128 "request illegal" ("This call failed
+	// channel verification, possibly because it was not sent from an official
+	// client") unless the request carries the desktop client's three
+	// conversation-correlation headers. The token, body and every other
+	// header in the A/B runs were identical — adding these three turned
+	// 11128 into 200.
+	// 2026-10-19 later the same day (issue #44): the Intl gateway joined the
+	// wave with its own copy ("Request blocked. Please send it again" /
+	// 「请求被拦截，请重新发送」); extending the same blank-only fill to
+	// isIntlDomain restored 200/finish_reason=stop on a user-first probe.
+	// 2026-10-20/21 (issue #45): CN domestic users report the same family
+	// hitting both realms at once. The official desktop client sends this
+	// header family on EVERY build — including CN copilot.tencent.com, as
+	// field-documented by the mcplugins reference implementation (which ships
+	// them on the CN build in production) — and our own growth task_chat path
+	// has always carried X-Conversation-ID on CN endpoints. The fill is
+	// therefore realm-unconditional now, still blank-only: caller-supplied
+	// ids survive, so task_chat's wb-task-* conversation ids and any preset
+	// header keep their values. Per-request random ids are accepted: the
+	// gateways validate presence/shape, not cross-turn continuity.
+	for _, h := range []string{"X-Conversation-ID", "X-Conversation-Request-ID", "X-Conversation-Message-ID"} {
+		if req.Header.Get(h) == "" {
+			req.Header.Set(h, growthClientToken())
+		}
+	}
+
 	if sa.Auth.AccessToken != "" {
 		req.Header.Set("Authorization", "Bearer "+sa.Auth.AccessToken)
 	} else {
@@ -676,14 +719,16 @@ func handleParseAuth(raw []byte) ([]byte, error) {
 	}
 	// HostConfigSummary arrives with every parse callback (startup scan and
 	// panel import). Cache the configured proxy URL so the billing direct
-	// path can honor config.yaml proxy-url — the bridge bypass dropped that
-	// policy and broke credits display on proxy-only deployments.
+	// path can honor config.yaml proxy-url — the v0.9.49 bridge bypass
+	// dropped that policy and broke credits display on proxy-only
+	// deployments (v0.9.52).
 	rememberHostProxy(req.Host.ProxyURL)
 	// Ownership check (CPA native contract): the host routes by the file's
 	// top-level "type" field (synthesizer/file.go). Files without a type fall
 	// back to polling every plugin — first Handled=true wins. Only claim files
 	// whose declared type matches us — or, for type-less legacy files, when the
 	// host already routed this to us or the filename carries our prefix.
+	// Symmetric with the qoderwork plugin's guard (commit 7b776a9).
 	var probeType struct {
 		Type string `json:"type"`
 	}
@@ -699,7 +744,8 @@ func handleParseAuth(raw []byte) ([]byte, error) {
 		// NOTE: req.Provider cannot prove ownership here — the host's
 		// callParseAuths rewrites an empty Provider to the POLLED plugin's own
 		// identifier, so EqualFold(req.Provider, "workbuddy") is always true
-		// while polling us regardless of the file's origin.
+		// while polling us regardless of the file's origin. Symmetric with the
+		// qoder plugin's fix (repo v0.12.9).
 		if !isOurFamilyFileName(req.FileName) {
 			return okEnvelope(pluginapi.AuthParseResponse{Handled: false})
 		}
@@ -806,6 +852,14 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
 		return nil, err
 	}
+	// Issue #35: cooldown fast-fail — a (credential, model) pair that just
+	// failed upstream (in-stream quota frame, empty stream, 429 family) fails
+	// here without an upstream call so the host rotates to another candidate
+	// instead of re-hammering the drained pair.
+	if err := modelCooldownError(req.AuthID, sa, upstreamModel); err != nil {
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
+		return nil, err
+	}
 	// CodeBuddy rejects non-stream requests (code 11101), so always stream
 	// upstream and fold the chunks into a single chat.completion object.
 	// prepareUpstreamBody does forceStream + normalizeTools + rewriteSystem +
@@ -829,6 +883,9 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		payload, _ := io.ReadAll(reader)
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, string(payload))
 		noteModelRateLimitFromPayload(authUID, upstreamModel, statusCode, string(payload))
+		// Issue #35: >=400 failures feed the per-(credential, model) cooldown
+		// table (6004 keeps its own registry — the classifier defers to it).
+		noteModelCooldownFailure(req.AuthID, sa, upstreamModel, statusCode, string(payload))
 		reconcileAfterExecutorError(req.AuthID, statusCode, string(payload))
 		// v0.12.18: 11102 model-catalog rejections become a bilingual,
 		// realm-aware actionable error; 0.9.14 adds 11115/WAF/Retry-After
@@ -840,6 +897,9 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	completion, err := aggregateCompletion(reader, req.Model)
 	if err != nil {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
+		// Issue #35: in-stream frame errors / empty streams from the fold path
+		// feed the pair cooldown too (all three executor paths are wired).
+		noteModelCooldownFailure(req.AuthID, sa, upstreamModel, 0, err.Error())
 		return nil, err
 	}
 	publishUsage(req.Model, upstreamModel, authUID, started, usageDetailFromCompletion(completion), false, 0, "")
@@ -880,6 +940,11 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
 		return nil, err
 	}
+	// Issue #35: cooldown fast-fail (same contract as the non-stream path).
+	if err := modelCooldownError(req.AuthID, sa, upstreamModel); err != nil {
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
+		return nil, err
+	}
 	body := req.Payload
 	if len(body) == 0 {
 		body = req.OriginalRequest
@@ -896,6 +961,10 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		chunks, statusCode, errCollect := collectUpstreamStream(body, sa, sseFramed, collector, upstreamModel)
 		if errCollect != nil {
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errCollect.Error())
+			// Issue #35: the sync collector surfaces frame errors,
+			// empty streams and >=400s as its error — feed the pair
+			// cooldown so the NEXT request rotates candidates.
+			noteModelCooldownFailure(req.AuthID, sa, upstreamModel, statusCode, errCollect.Error())
 			return nil, errCollect
 		}
 		publishUsage(req.Model, upstreamModel, authUID, started, collector.detail(), false, 0, "")

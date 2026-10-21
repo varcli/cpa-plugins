@@ -1,15 +1,17 @@
-// oauth_fallback.go: multi-endpoint OAuth fallback helpers to fix
-// "404 page not found" during OAuth login.
+// oauth_fallback.go: multi-endpoint OAuth fallback helpers, ported from
+// cockpit-tools trae_oauth.rs to fix "404 page not found" during OAuth login.
 //
-// Fixes applied:
-//   - ensureHTTPSScheme: a bare domain gets an https:// prefix.
+// Fixes applied (all mirror cockpit-tools behavior):
+//   - ensureHTTPSScheme: cockpit-tools ensure_https_url (trae_oauth.rs:1117-1126).
 //     GetLoginGuidance returns LoginHost as a BARE domain ("www.trae.cn"); the
 //     login URL must get an https:// prefix or the panel/browser resolves it as
 //     a RELATIVE URL against the CPA server itself → gin default 404 body
 //     "404 page not found".
-//   - requestLoginGuidance: tries every GetLoginGuidance endpoint in the
+//   - requestLoginGuidance: cockpit-tools request_login_guidance
+//     (trae_oauth.rs:1762-1848) — tries every GetLoginGuidance endpoint in the
 //     platform list before failing; CN falls back to the default login host.
-//   - candidateAPIOorigins + buildAPIURLs: derives candidate API origins
+//   - candidateAPIOorigins + buildAPIURLs: cockpit-tools candidate_api_origins /
+//     build_api_urls (trae_oauth.rs:1994-2037) — derives candidate API origins
 //     from the callback loginHost (rewriting www. → api.), then appends the
 //     platform defaults. ExchangeToken/GetUserInfo try each URL in turn until
 //     one returns an access token, instead of hard-coding a single host.
@@ -26,7 +28,8 @@ import (
 	"time"
 )
 
-// Platform GetLoginGuidance endpoint lists.
+// Platform GetLoginGuidance endpoint lists — cockpit-tools
+// TRAE_CN_LOGIN_GUIDANCE_URLS / TRAE_LOGIN_GUIDANCE_URLS (trae_oauth.rs:36-44).
 var (
 	traeCNLoginGuidanceURLs = []string{
 		"https://api.trae.cn/cloudide/api/v3/trae/GetLoginGuidance",
@@ -40,19 +43,21 @@ var (
 	}
 )
 
-// Platform default API origins.
+// Platform default API origins — cockpit-tools TRAE_ACCOUNT_API_ORIGIN_* and
+// candidate_api_origins platform branches (trae_oauth.rs:51-56, 2009-2022).
 var (
 	traeCNDefaultOrigins = []string{
 		"https://api.trae.cn",
 		"https://api.trae.com.cn",
 		"https://www.trae.cn",
 	}
-	// Intl auth-code ExchangeToken uses the account API origins:
-	// normal → grow-normal, sg → growsg-normal. api.marscode.com / api.trae.ai
-	// are kept as extra fallbacks for resilience. grow-normal.traeapi.us is
-	// upstream's newer US direct origin (live-verified 2026-09-03: api.* hosts
-	// 404 the ExchangeToken path at the TLB edge, so extra real origins only
-	// widen the fallback).
+	// Intl auth-code ExchangeToken uses the account API origins (cockpit-tools
+	// default_account_api_config, trae_oauth.rs:683-688): normal → grow-normal,
+	// sg → growsg-normal. api.marscode.com / api.trae.ai are kept as extra
+	// fallbacks for resilience. grow-normal.traeapi.us = cockpit-tools
+	// TRAE_ACCOUNT_API_ORIGIN_USTTP (upstream's newer US direct origin;
+	// live-verified 2026-09-03: api.* hosts 404 the ExchangeToken path at the
+	// TLB edge, so extra real origins only widen the fallback).
 	traeIntlDefaultOrigins = []string{
 		"https://grow-normal.trae.ai",
 		"https://growsg-normal.trae.ai",
@@ -62,7 +67,7 @@ var (
 	}
 )
 
-// ensureHTTPSScheme: a bare domain such
+// ensureHTTPSScheme mirrors cockpit-tools ensure_https_url: a bare domain such
 // as "www.trae.cn" gets an https:// prefix. Without this the verification URI
 // returned to the panel is scheme-less and the browser treats it as a relative
 // path on the CPA server → "404 page not found".
@@ -77,7 +82,7 @@ func ensureHTTPSScheme(raw string) string {
 	return "https://" + strings.TrimLeft(normalized, "/")
 }
 
-// candidateAPIOorigins builds the candidate origin list:
+// candidateAPIOorigins mirrors cockpit-tools candidate_api_origins:
 //  1. origin derived from the callback loginHost (scheme + host);
 //  2. if that host starts with "www.", also the api. variant;
 //  3. platform default origins.
@@ -144,10 +149,10 @@ func dedupKeepOrder(values []string) []string {
 	return out
 }
 
-// requestLoginGuidance POSTs
+// requestLoginGuidance mirrors cockpit-tools request_login_guidance: POST
 // {loginTraceID, login_trace_id} to every platform endpoint until one returns
 // a parseable LoginHost. On CN, a total failure falls back to the default
-// login host instead of erroring out.
+// login host instead of erroring out (cockpit-tools trae_oauth.rs:1834-1841).
 func requestLoginGuidance(cn bool, loginTraceID string) (loginHost string, lastErr error) {
 	endpoints := traeIntlLoginGuidanceURLs
 	if cn {
@@ -192,8 +197,8 @@ func requestLoginGuidance(cn bool, loginTraceID string) (loginHost string, lastE
 		errs = append(errs, fmt.Sprintf("%s => response missing LoginHost (body=%s)", endpoint, truncate(string(raw), 120)))
 	}
 	if cn {
-		// CN degrades to the default login host rather than blocking the
-		// login flow.
+		// cockpit-tools: CN degrades to the default login host rather than
+		// blocking the login flow (trae_oauth.rs:1834-1841).
 		log.Printf("[Trae OAuth] login guidance failed (%s) — falling back to default login host %s",
 			strings.Join(errs, " | "), oauthDefaultHost)
 		return oauthDefaultHost, nil
@@ -203,7 +208,7 @@ func requestLoginGuidance(cn bool, loginTraceID string) (loginHost string, lastE
 
 // exchangeTokenCandidates tries each candidate URL in turn for the auth-code
 // ExchangeToken call and returns the first 2xx JSON body that carries an
-// access token (any of the accepted field names). Every failure
+// access token (any of the field names cockpit-tools accepts). Every failure
 // is recorded so the caller can surface a meaningful error.
 func exchangeTokenCandidates(urls []string, body []byte) (raw []byte, err error) {
 	var errs []string
@@ -226,6 +231,15 @@ func exchangeTokenCandidates(urls []string, body []byte) (raw []byte, err error)
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
 		if resp.StatusCode >= 400 {
+			if code, msg := upstreamErrorCode(data); code != "" {
+				// v0.12.76: 业务性拒绝（带 Volcengine ResponseMetadata.Error.Code 的 4xx）是
+				// 账号/请求状态，与候选源无关 —— 立即短路，不再向其余源多烧失败请求
+				//（20401 Device limit reached 绝不该再走到 www.trae.cn 的 WAF；issue #38
+				// 服务端安全层教训，对齐 v0.12.74 刷新路径的单源决策）。网络错误/404/5xx/
+				// HTML 体保持原回退行为。
+				return nil, fmt.Errorf("ExchangeToken failed: %s => HTTP %d upstream code=%s (%s)%s",
+					u, resp.StatusCode, code, truncate(msg, 160), loginExchangeErrorHint(code))
+			}
 			// 404 page not found and friends: try the next candidate.
 			// v0.12.24: surface the Volcengine-style
 			// ResponseMetadata.Error code+message instead of a
@@ -241,6 +255,32 @@ func exchangeTokenCandidates(urls []string, body []byte) (raw []byte, err error)
 		errs = append(errs, fmt.Sprintf("%s => no access token (body=%s)", u, truncate(string(data), 120)))
 	}
 	return nil, fmt.Errorf("ExchangeToken failed: %s", strings.Join(errs, " | "))
+}
+
+// upstreamErrorCode 解析 Volcengine 风格 ResponseMetadata.Error {Code, Message}；
+// 不存在该信封时返回 ""。与 surfaceUpstreamError 的差别：本函数返回原始
+// code/msg 供短路判断与提示拼接，而非拼接好的展示串。
+func upstreamErrorCode(data []byte) (code, msg string) {
+	var env struct {
+		ResponseMetadata struct {
+			Error struct {
+				Code    string `json:"Code"`
+				Message string `json:"Message"`
+			} `json:"Error"`
+		} `json:"ResponseMetadata"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(env.ResponseMetadata.Error.Code), strings.TrimSpace(env.ResponseMetadata.Error.Message)
+}
+
+// loginExchangeErrorHint 把登录交换的上游业务码映射为用户可执行的恢复指引。
+func loginExchangeErrorHint(code string) string {
+	if code == "20401" {
+		return " — 设备数已达上限（Device limit reached）：该账号绑定的设备位已满。请任选其一：① 在 Trae 官方客户端或网页端的设备管理中解绑不再使用的旧设备后重试登录；② 直接重试登录 —— v0.12.76 起本插件复用本机设备身份登录，不再每次消耗新设备位，若本机曾有该账号的成功凭证即可直接成功 (unbind an old device via the official Trae client/web, or simply retry the login — this install now reuses its own device identity)"
+	}
+	return ""
 }
 
 // surfaceUpstreamError extracts the Volcengine-style ResponseMetadata.Error
@@ -263,8 +303,8 @@ func surfaceUpstreamError(data []byte) string {
 	return "(body=" + truncate(string(data), 120) + ")"
 }
 
-// extractExchangeAccessToken checks
-// Result/{AccessToken,accessToken,Token,token} plus top-level variants.
+// extractExchangeAccessToken mirrors cockpit-tools extract_exchange_access_token:
+// checks Result/{AccessToken,accessToken,Token,token} plus top-level variants.
 func extractExchangeAccessToken(raw []byte) string {
 	var top map[string]any
 	if err := json.Unmarshal(raw, &top); err != nil {
@@ -293,8 +333,9 @@ func extractExchangeAccessToken(raw []byte) string {
 	return ""
 }
 
-// authCodeExchangeURLsCN builds the CN AuthCode ExchangeToken candidate list:
-// the official client exchanges the
+// authCodeExchangeURLsCN builds the CN AuthCode ExchangeToken candidate list,
+// mirroring cockpit-tools candidate_account_api_origins for the CN platform
+// (trae_oauth.rs:2039-2049 + 2011-2012): the official client exchanges the
 // auth code against the CN account-API origins (api.trae.cn first, then
 // api.trae.com.cn) and only falls back to the callback loginHost derivation
 // (www.trae.cn HTML host etc.) after every official origin had its turn —

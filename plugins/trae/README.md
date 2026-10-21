@@ -18,6 +18,9 @@ CLIProxyAPI 的 Trae 统一 Provider 插件：**一个插件同时覆盖 Trae Co
 | **Intl 账单面** | Intl 账号积分走 `grow-normal.trae.ai` + `/trae/api/v1/pay/*`（此前 Intl 也走 CN 客户端，恒 401 `session_dead`）；float 容错换算，Intl 保持池中性、不发 CN 签到请求 |
 | **设备身份持久化** | Intl 登录/刷新持久化 `machineId`/`deviceId` 与设备密钥对（此前只存 `boundDeviceId`，`device_id_set` 为 false、`X-Device-Id` 为空） |
 | **面板积分条** | 积分条按计费变体正确渲染（含 credits 池），顶部刷新按钮实时拉取 |
+| **稳定设备身份** | 按安装/账号派生稳定设备指纹，避免 20401 设备数上限锁死；绑定续期按 lineage 阶梯（自有优先、跨 lineage 兜底），失败有根因分类 |
+| **登录拒绝短路** | ExchangeToken 扇出遇到业务拒绝（20401/10101 等）立即短路，不再做无效重试把登录拖死 |
+| **回调一致性** | 资源回调路由与 self-complete 走同一套设备身份与持久化路径，远程/容器环境下登录不再卡 pending |
 
 ## 安装
 

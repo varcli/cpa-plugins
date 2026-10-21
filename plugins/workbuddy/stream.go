@@ -231,6 +231,9 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		// The transport-level failure carries no upstream status; surface it to
 		// the hand-off as a plain pre-answer failure (status 0) so a stalled
 		// stream that errors before answering never opens the host stream.
+		// (Deliberately NOT tabled in cooldown.go: a transport hiccup says
+		// nothing about the pair — same reasoning as policy.go's
+		// transport-lifecycle wording.)
 		if !gate.fail(fmt.Errorf("http_error: %v", err)) {
 			return
 		}
@@ -243,6 +246,10 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		errPayload, _ := io.ReadAll(newHostStreamReader(stream))
 		publishUsage(requestedModel, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, string(errPayload))
 		noteModelRateLimitFromPayload(authUID, upstreamModel, statusCode, string(errPayload))
+		// issue #35: >=400 failures also feed the per-(credential, model)
+		// cooldown table (6004 was just noted into its own registry; the
+		// classifier here defers to it, see cooldown.go).
+		noteModelCooldownFailure(authID, sa, upstreamModel, statusCode, string(errPayload))
 		if authUID != "" {
 			go reconcileByUID(authUID, statusCode, string(errPayload))
 		}
@@ -271,6 +278,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 	if !seenPayload {
 		message := emptyStreamError().Error()
 		publishUsage(requestedModel, upstreamModel, authUID, started, collector.detail(), true, 0, message)
+		noteModelCooldownFailure(authID, sa, upstreamModel, 0, message)
 		streamEmitError(streamID, message)
 		return
 	}
@@ -279,6 +287,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 	if err := scanner.Err(); err != nil {
 		readErr := upstreamReadError(err)
 		publishUsage(requestedModel, upstreamModel, authUID, started, collector.detail(), true, 0, readErr.Error())
+		noteModelCooldownFailure(authID, sa, upstreamModel, 0, readErr.Error())
 		streamEmitError(streamID, readErr.Error())
 		return
 	}
@@ -313,11 +322,19 @@ func pumpStreamFrames(scanner *bufio.Scanner, sink streamSink, gate *streamHeadG
 	// Issue #30: per-choice output scrubbers — strip the leading tag-block run
 	// the reasoning replay taught the model to emit (see tag_scrub.go).
 	scrubbers := map[int]*thoughtTagScrubber{}
+	// Issue #36: per-choice tool-call accumulator — the terminal chunk's
+	// finish_reason "stop" becomes "tool_calls" when the choice carried
+	// tool_calls (see finish_reason.go).
+	toolSeen := map[int]bool{}
 	for scanner.Scan() {
 		line := scanner.Text()
 		content, meaningful, frameErr := workBuddyStreamFrame(line)
 		if frameErr != nil {
 			publishUsage(requestedModel, upstreamModel, authUID, started, collector.detail(), true, 0, frameErr.Error())
+			// issue #35: an in-stream failure on a 200 stream feeds the
+			// per-(credential, model) cooldown table so the host scheduler
+			// stops re-offering the degraded pair (see cooldown.go).
+			noteModelCooldownFailure("", sa, upstreamModel, 0, frameErr.Error())
 			if gating {
 				// Classify from the raw frame body (the error string only
 				// carries a redacted/truncated copy) so 6004 etc. stay honest.
@@ -342,6 +359,7 @@ func pumpStreamFrames(scanner *bufio.Scanner, sink streamSink, gate *streamHeadG
 		if cleaned == "" {
 			continue
 		}
+		cleaned = fixFinishReasonToolCalls(cleaned, toolSeen)
 		payload := cleaned
 		if sseFramed {
 			payload = "data: " + cleaned
@@ -462,6 +480,8 @@ func aggregateSSEWithCollector(r io.Reader, sseFramed bool, collector *sseUsageC
 	seenPayload := false
 	// Issue #30: per-choice output scrubbers (see tag_scrub.go).
 	scrubbers := map[int]*thoughtTagScrubber{}
+	// Issue #36: per-choice tool-call accumulator (see finish_reason.go).
+	toolSeen := map[int]bool{}
 	for scanner.Scan() {
 		content, meaningful, frameErr := workBuddyStreamFrame(scanner.Text())
 		if frameErr != nil {
@@ -478,6 +498,7 @@ func aggregateSSEWithCollector(r io.Reader, sseFramed bool, collector *sseUsageC
 		if cleaned == "" {
 			continue
 		}
+		cleaned = fixFinishReasonToolCalls(cleaned, toolSeen)
 		if sseFramed {
 			cleaned = "data: " + cleaned
 		}
@@ -506,7 +527,7 @@ func cleanChunkJSON(s string) string {
 	// SSE comment frames (": keep-alive" / ": heartbeat") are legal upstream
 	// keep-alives but must never be re-emitted as "data: ..." events: strict
 	// clients JSON-parse every data: line and "data: : heartbeat" crashes them
-	// with "Unexpected token ':'". They carry no
+	// with "Unexpected token ':'" (adapted from PR #6 / a19bb56). They carry no
 	// payload, so dropping them here is lossless for every consumer.
 	if strings.HasPrefix(s, ":") {
 		return ""
@@ -682,7 +703,7 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 		// leaves half a JSON string that would wedge the client's parser into
 		// an illegal-JSON loop. Kept calls are untouched; when every call is
 		// damaged the field is omitted entirely and finish_reason (often
-		// "length") tells the client why.
+		// "length") tells the client why. Upstream-ref: wb2api truncation.go.
 		calls = dropTruncatedToolCalls(calls)
 		if len(calls) > 0 {
 			message["tool_calls"] = calls
@@ -690,6 +711,13 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 	}
 	if created == 0 {
 		created = time.Now().Unix()
+	}
+	// Issue #36: the intl/IDE upstream maps its internal end_turn to
+	// "stop" even after emitting tool_calls — a folded message carrying
+	// tool_calls must finish with "tool_calls" (see finish_reason.go).
+	foldCalls := 0
+	if v, ok := message["tool_calls"].([]map[string]any); ok {
+		foldCalls = len(v)
 	}
 	result := map[string]any{
 		"id":      firstNonEmpty(respID, "chatcmpl-workbuddy"),
@@ -699,7 +727,7 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 		"choices": []map[string]any{{
 			"index":         0,
 			"message":       message,
-			"finish_reason": firstNonEmpty(finish, "stop"),
+			"finish_reason": foldedFinishReason(finish, foldCalls),
 		}},
 	}
 	if usage != nil {
@@ -752,7 +780,7 @@ func stripDataPrefix(s string) string {
 }
 
 // workBuddyStreamFrame inspects one upstream SSE line BEFORE translation.
-// v0.9.29: the previous pumps fed every
+// v0.9.29 (fork libo0118/qoder-custom review): the previous pumps fed every
 // data line straight into cleanChunkJSON, so an upstream error frame (SSE
 // "event:error" line, or a 200-OK JSON body carrying {"error":...} / a
 // non-zero code) was silently swallowed — the stream ended looking
@@ -797,7 +825,7 @@ func workBuddyStreamFrame(line string) (string, bool, error) {
 // The head gate keys on frame CONTENT, not "a frame arrived" — upstream always
 // sends a role-only opener first ({"delta":{"role":"assistant"}}), so treating
 // any first frame as "answered" would let the gate release before a pre-answer
-// error frame ever surfaces (the exact trap trae's stream gate documents). An empty
+// error frame ever surfaces (the exact trap trae PR #11 documented). An empty
 // content delta is a legal no-op frame and still does not count.
 func streamChunkAnswers(chunk []byte) bool {
 	var frame struct {
@@ -832,7 +860,7 @@ func firstNonEmpty(vals ...string) string {
 // off mid-stream: empty/whitespace-only is a LEGAL no-argument call, and any
 // parseable JSON (null/scalars/arrays included) is passed through for client
 // schema validation. Only "non-empty AND unparseable" counts as truncation
-// damage.
+// damage. (Upstream-ref: wb2api truncation.go / sse.ts:158-167.)
 func isTruncatedArguments(raw string) bool {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {

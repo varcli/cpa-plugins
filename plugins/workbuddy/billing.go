@@ -124,6 +124,17 @@ func setBillingBaseGlobal(s string) func() {
 	return func() { billingBaseGlobal = old }
 }
 
+// setBillingBaseIntl temporarily overrides billingBaseIntl for tests.
+// v0.9.60 (issue #39 CI follow-up): TestBillingHeaders_IntlRealm used to
+// dial the real www.codebuddy.ai because only the CN/Global bases had test
+// setters — the suite passed wherever the domain resolved (developer
+// machines) and timed out on GitHub runners, whose DNS maps it to 0.0.0.1.
+func setBillingBaseIntl(s string) func() {
+	old := billingBaseIntl
+	billingBaseIntl = s
+	return func() { billingBaseIntl = old }
+}
+
 // billingBaseFor returns the billing API base URL for the given auth's domain.
 // CN accounts → https://www.codebuddy.cn; Global → https://www.workbuddy.ai.
 // Falls back to the test-overridable billingBase for CN/nil.
@@ -168,6 +179,7 @@ func billingHeaders(req *http.Request, sa *storedAuth) {
 	if sa.Auth.Domain != "" {
 		req.Header.Set("X-Domain", sa.Auth.Domain)
 	}
+	req.Header.Set("User-Agent", "CodeBuddy")
 	// Intl realm parity (applyRealmHeaders): the codebuddy.ai gateway expects
 	// the IDE client header set and no X-Requested-With. Without these the
 	// request is treated as a browser call and bounced (401).
@@ -189,29 +201,31 @@ func billingCall(sa *storedAuth, path string, body any) (json.RawMessage, error)
 		}
 		time.Sleep(d)
 		// Retry ladder (v0.9.52): attempt 1 and 3 run on the rescue transport
-		// (fresh connection per attempt) — the pooled path just failed with a
-		// transport error, so hammering the exact same socket state is how
-		// 3-for-3 EOF exhaustion happens. Attempt 2 forces the HOST BRIDGE
-		// despite the codebuddy.ai direct bypass: the bridge applies the
-		// host's own transport policy (config.yaml proxy-url), the one path
-		// that works when the deployment's proxy lives only in CPA config
-		// and the plugin hasn't seen a HostConfigSummary yet.
+		// (fresh connection per attempt, tcp4-first dialing) — the pooled path
+		// just failed with a transport error, so hammering the exact same
+		// socket state is how 3-for-3 EOF exhaustion happens. Attempt 2 forces
+		// the HOST BRIDGE despite the codebuddy.ai direct bypass: the bridge
+		// applies the host's own transport policy (config.yaml proxy-url), the
+		// one path that works when the deployment's proxy lives only in CPA
+		// config and the plugin hasn't seen a HostConfigSummary yet.
 		data, err = billingCallOnce(sa, path, body, attempts)
 		attempts++
 	}
 	if err != nil && isTransientBillingErr(err) {
 		// Transport-class exhaustion: keep the underlying error first (its
 		// `Post "url": EOF` shape stays greppable and transient-classified),
-		// then the actionable deployment hint, then the staged net-diag probe
-		// so a field report pinpoints the failing stage instead of another
-		// bare EOF.
+		// append the actionable deployment hint, then the staged net-diag
+		// probe (v0.9.53: dns → tcp → tls → http per candidate IP) so a
+		// field report pinpoints the failing stage instead of another bare
+		// EOF. Probe results are cached for 30s and skipped entirely for
+		// IP-literal/localhost bases (hermetic tests).
 		//
 		// Also reset dial state: stickiness clearly picked a losing path,
 		// so forget the cached-good IP / dead marks and drop pooled
 		// connections (a poisoned pooled conn would otherwise serve the
 		// next billing call straight from the pool).
 		billingResetDialState()
-		return data, fmt.Errorf("%w — billing gateway unreachable after %d attempts (direct pooled+rescue fresh-conn and host-bridge paths; set proxy-url in CPA config.yaml or HTTPS_PROXY on the host process if codebuddy.ai/workbuddy.ai needs a proxy from this network)%s", err, attempts, billingNetDiagSuffix(billingBaseFor(sa)))
+		return data, fmt.Errorf("%w — billing gateway unreachable after %d attempts (direct pooled+rescue fresh-conn/v4 and host-bridge paths; set proxy-url in CPA config.yaml or HTTPS_PROXY on the host process if codebuddy.ai/workbuddy.ai needs a proxy from this network)%s", err, attempts, billingNetDiagSuffix(billingBaseFor(sa)))
 	}
 	return data, err
 }
@@ -256,7 +270,7 @@ func isTransientBillingErr(err error) bool {
 // sharedHTTPClient; attempt 2 marks the context for the host-bridge fallback
 // (host transport policy incl. config.yaml proxy-url); all other attempts >= 1
 // mark the context so hostHTTPDoDirect routes through rescueHTTPClient (fresh
-// connection per attempt).
+// connection per attempt, tcp4-first).
 func billingCallOnce(sa *storedAuth, path string, body any, attempt int) (json.RawMessage, error) {
 	var reader *bytes.Reader
 	if body != nil {
@@ -284,8 +298,6 @@ func billingCallOnce(sa *storedAuth, path string, body any, attempt int) (json.R
 		return nil, err
 	}
 	billingHeaders(req, sa)
-	// Route via host.http.do so request-log captures the call (v0.8.1 compliance:
-	// was sharedHTTPClient().Do — bypassed host transport policy + logging).
 	resp, err := hostHTTPDo(req)
 	if err != nil {
 		return nil, err

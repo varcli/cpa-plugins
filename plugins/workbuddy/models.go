@@ -226,7 +226,7 @@ func noteRealmSource(realm, source string, count int) {
 // minute (model.for_auth can fire per models query, and silent failure is
 // exactly what made thin/stale model lists undiagnosable).
 //
-// v0.12.71: a transient failure must NOT wipe
+// v0.12.71 (adapted from PR #6 / ab64e63): a transient failure must NOT wipe
 // the last successful discovery. The host re-runs model.for_auth per auth
 // over time; blanking models here makes different auths register different
 // lists at different instants, which the host then turns into a shrunken
@@ -309,7 +309,7 @@ func cachedDynamicModels(realm string) ([]pluginapi.ModelInfo, bool) {
 }
 
 // cachedDynamicModelsStale returns the realm's last successful discovery
-// result regardless of TTL (v0.12.71): on a
+// result regardless of TTL (v0.12.71, adapted from PR #6 / ab64e63): on a
 // transient discovery failure the previously discovered list is still the
 // best-known answer for that realm — better than the static catalog, which
 // may be a subset or carry retired entries. Only the fresh-TTL path
@@ -439,8 +439,9 @@ func modelsEndpointFor(realm string) (modelsURL, origin string) {
 	}
 }
 
-// callModelsAPI resolves a realm's live model catalog. v0.9.12 dual probe,
-// extended 0.9.35 to the identity-split reality:
+// callModelsAPI resolves a realm's live model catalog. v0.9.12 dual probe
+// (mirrors workbuddy2api-panel FetchModels), extended 0.9.35 to the
+// identity-split reality:
 //   - enterprise: GET the account's registration table (cli agent list gives
 //     ordering, data.models the capabilities). Ordering authority. v0.9.35:
 //     global/intl try the /v2 path family first (measured 200 with the
@@ -448,13 +449,13 @@ func modelsEndpointFor(realm string) (modelsURL, origin string) {
 //     and fall back to /console — see enterpriseEndpointCandidates.
 //   - v3/config: the official IDE configuration catalog — UA-sensitive. The
 //     gateway splits it by client identity and each identity carries models
-//     the other lacks (2026-09-22 measurement on workbuddy.ai: IDE UA → 10
-//     chat with o4-mini / enhance-1.0 / auto-chat and no deepseek series;
-//     CLI UA → 22 chat with deepseek-v4.1-flash / -sg / gpt-6-astra /
-//     kimi-k2.8-preview and none of those aliases). v0.9.35: global/intl
-//     probe BOTH identities concurrently and union the rosters — IDE roster
-//     field-authoritative, CLI roster only fills ids. cn stays IDE-UA
-//     single-probe.
+//     the other lacks (2026-09-22 measurement on workbuddy.ai,
+//     workbuddy2api-panel client.go: IDE UA → 10 chat with o4-mini /
+//     enhance-1.0 / auto-chat and no deepseek series; CLI UA → 22 chat with
+//     deepseek-v4.1-flash / -sg / gpt-6-astra / kimi-k2.8-preview and none
+//     of those aliases). v0.9.35: global/intl probe BOTH identities
+//     concurrently and union the rosters — IDE roster field-authoritative,
+//     CLI roster only fills ids. cn stays IDE-UA single-probe.
 //
 // All probes run concurrently with independent failure handling: one
 // path's failure degrades to the rest (warn logged), only a total failure
@@ -537,7 +538,8 @@ func callModelsAPI(accessToken string, realm ...string) ([]pluginapi.ModelInfo, 
 
 // enterpriseEndpointCandidates returns the enterprise catalog URLs to probe
 // in order, plus the shared Origin/Referer base. global/intl try the /v2
-// path family first — measured /v2/enterprises/personal/models answering
+// path family first — workbuddy2api-panel (global_models.go
+// globalModelsProbePaths) measured /v2/enterprises/personal/models answering
 // 200 with the complete model table while /console is the same-domain legacy
 // path that may 500 — and fall back to /console; cn keeps its measured
 // /console-only sequence.
@@ -648,32 +650,40 @@ func fetchEnterpriseCatalog(ctx context.Context, accessToken, realm, modelsURL, 
 // v3ConfigUA is the IDE/App identity the /v3/config catalog requires (the
 // UA must parse as a CodeBuddy version or the endpoint 400s with code
 // 12403). The gateway splits the /v3/config catalog by client identity and
-// the split is load-bearing: a CLI-shaped UA yields the CLI's roster, an
-// App-shaped UA the App's internal roster. The IDE/App-shaped UA returns
-// entries with richer per-model capability fields (flash output 393216 +
-// low/high/max efforts) while the CLI-shaped UA returns a different, larger
-// model SET. Measured on workbuddy.ai (2026-09-22): IDE UA → 10 chat models
-// (o4-mini / enhance-1.0 / auto-chat present, no deepseek series) vs CLI UA
-// → 22 chat models (deepseek-v4.1-flash / deepseek-v4.1-flash-sg /
-// gpt-6-astra / kimi-k2.8-preview present, none of those aliases). Each
-// identity carries models the other lacks, so global/intl discovery probes
-// BOTH and unions the rosters (v3ProbeUAsFor). The version must track
-// upstream IDE releases; stale versions may serve a reduced table.
+// the split is load-bearing (dsh-workbuddy-connect upstream.ts: a
+// CLI-shaped UA yields the CLI's roster, an App-shaped UA the App's
+// internal roster): the IDE/App-shaped UA returns entries with richer
+// per-model capability fields (flash output 393216 + low/high/max efforts)
+// while the CLI-shaped UA returns a different, larger model SET. Measured
+// on workbuddy.ai (2026-09-22, workbuddy2api-panel client.go
+// codeBuddyCLIUA note): IDE UA → 10 chat models (o4-mini / enhance-1.0 /
+// auto-chat present, no deepseek series) vs CLI UA → 22 chat models
+// (deepseek-v4.1-flash / deepseek-v4.1-flash-sg / gpt-6-astra /
+// kimi-k2.8-preview present, none of those aliases). Each identity carries
+// models the other lacks, so global/intl discovery probes BOTH and unions
+// the rosters (v3ProbeUAsFor). The version must track upstream IDE
+// releases; stale versions may serve a reduced table (workbuddy2api-panel
+// reference detail).
 const v3ConfigUA = "CodeBuddyIDE/4.12.0 CodeBuddy/4.12.0"
 
 // v3ConfigCLIUA is the CLI three-segment identity the /v3/config gateway
-// treats as its own catalog client. The string is live-measured (2026-09);
-// the version needs currency checks — a stale version can at worst shrink
-// the CLI roster toward the IDE set, which the union tolerates (extra
-// probes only ever add ids). The CLI probe additionally carries the CLI
-// X-IDE-* identity headers.
+// treats as its own catalog client. Two independent projects ship this
+// exact string (workbuddy2api-panel codeBuddyCLIUA and
+// dsh-workbuddy-connect CLIENT_UA, both live-measured 2026-09);
+// codebuddy2api (client_profiles.py CLI_VERSION) already tracks
+// CLI/2.149.0, so the version needs currency checks — a stale version can
+// at worst shrink the CLI roster toward the IDE set, which the union
+// tolerates (extra probes only ever add ids). The CLI probe additionally
+// carries the CLI X-IDE-* identity headers (codebuddy2api
+// client_profiles.identity_headers).
 const v3ConfigCLIUA = "CLI/2.63.2 CodeBuddy/2.63.2"
 
 // v3ProbeUAsFor returns the /v3/config User-Agents to probe for one realm,
 // in merge order (first = field-authoritative). global/intl probe both
 // identities — each carries exclusive models; cn stays IDE-UA single-probe
 // (the CN catalog already surfaces the real families through the
-// enterprise endpoint and the CN identity split is unmeasured).
+// enterprise endpoint, the CN identity split is unmeasured, and
+// workbuddy2api-panel keeps CN single-probe too).
 func v3ProbeUAsFor(realm string) []string {
 	if realm == "global" || realm == "intl" {
 		return []string{v3ConfigUA, v3ConfigCLIUA}
@@ -811,8 +821,9 @@ func parseV3ConfigModels(body []byte) ([]discoveredModel, error) {
 // mergeV3IdentityLists unions the per-identity /v3/config rosters in probe
 // order: the earlier identity (IDE UA) is field-authoritative — a later
 // identity (CLI UA) only contributes ids the earlier ones lack, and its
-// per-entry fields never overwrite an existing entry (the dual-UA rosters
-// merge with the same rule: IDE fields win, CLI ids fill the gaps).
+// per-entry fields never overwrite an existing entry (workbuddy2api-panel
+// merges its dual-UA rosters with the same rule: IDE fields win, CLI ids
+// fill the gaps).
 func mergeV3IdentityLists(lists ...[]discoveredModel) []discoveredModel {
 	var out []discoveredModel
 	seen := map[string]bool{}
@@ -895,8 +906,8 @@ func (m discoveredModel) reasoning() reasoningMeta {
 }
 
 // nonChatModel reports whether a discovery entry is a non-chat model that
-// must never reach the selectable list (both verified against live
-// payloads):
+// must never reach the selectable list. Mirrors harness buddy.ts isChatModel
+// and workbuddy2api-panel nonChatModel (both verified against live payloads):
 //   - id prefix nes-/completion-/codewise-: embedding/completion/code-only
 //     models; selecting one dies with code 11102.
 //   - supportsExtra (codewise-completions/rewrite/jump markers): IDE-internal
@@ -1151,8 +1162,8 @@ func discoverToInfo(m discoveredModel) pluginapi.ModelInfo {
 }
 
 // mergeDiscoveryLists overlays v3/config capability data onto the enterprise
-// list and appends v3-only models. Merge key = lowercase model id; the v3
-// entry wins for capability fields
+// list and appends v3-only models. Merge key = lowercase model id; per the
+// workbuddy2api-panel reference the v3 entry wins for capability fields
 // (full IDE UA catalog: real context windows, effort levels) while the
 // enterprise probe remains the ordering authority (cli agent base + recent
 // promotions). v3-only entries (gpt-5.3-codex etc. on global) are appended
@@ -1233,7 +1244,7 @@ func cacheModelAliases(host pluginapi.HostConfigSummary) {
 	// Model discovery is the second HostConfigSummary delivery point (parse
 	// is the first). Cache the configured proxy URL here too so deployments
 	// whose first plugin callback was a model request still populate the
-	// billing proxy policy.
+	// billing proxy policy (v0.9.52).
 	rememberHostProxy(host.ProxyURL)
 	entries := host.OAuthModelAlias[providerName]
 	if len(entries) == 0 {
@@ -1467,14 +1478,26 @@ func handleModelForAuth(raw []byte) ([]byte, error) {
 	// auth file carries a non-canonical provider string.
 	cacheModelAliases(req.Host)
 	models := fetchDynamicModelsFromStorage(req.StorageJSON)
+	tok, _ := extractAccessToken(req.StorageJSON)
+	// Issue #35 (v0.9.57): drop (credential, model) pairs cooling after an
+	// upstream failure — the in-stream quota frame / empty-stream family —
+	// so the host's built-in scheduler stops offering the degraded pair and
+	// rotates to another candidate. Pinned models are filtered too: a pin
+	// declares "this credential serves these ids", not "upstream is healthy".
+	// req.AuthID follows the host auth-id convention (sanitized UID); empty
+	// (host versions without it) degrades to a no-op filter.
+	//
+	// v0.13.0 ordering: the cooling registry keys on BARE upstream ids (the
+	// executor records them before any prefixing), so this must run BEFORE
+	// prefixModelInfos. Exclusions run AFTER it, because their patterns match
+	// the advertised (prefixed) id.
+	models = filterCoolingModels(req.AuthID, models)
 	// v0.13.0: advertise every id in the plugin's model namespace
-	// ("workbuddy/…"). The prefix is applied at the serve boundary — the
+	// ("workbuddy/"). The prefix is applied at the serve boundary — the
 	// discovery/merge/learned-alias machinery keeps working on bare upstream
 	// ids, and the persisted snapshot stays raw. addModelPrefix is idempotent.
 	// v0.9.39: exclusions re-apply at BOTH granularities — the provider key
-	// (whole plugin) and this credential's realm sub-key (channel-scoped) —
-	// AFTER the prefix, because exclusion patterns match the advertised id.
-	tok, _ := extractAccessToken(req.StorageJSON)
+	// (whole plugin) and this credential's realm sub-key (channel-scoped).
 	models = filterExcludedModelsForRealm(prefixModelInfos(models), req.Host, realmForStorage(req.StorageJSON, tok))
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }

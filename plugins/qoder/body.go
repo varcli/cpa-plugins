@@ -97,7 +97,8 @@ func (m *openAIMessage) UnmarshalJSON(data []byte) error {
 		// 0.8.12: JSON null round-trips verbatim — unmarshaling null into a
 		// string silently yields "" and would rewrite the member behind the
 		// client's back (assistant messages carrying tool_calls commonly have
-		// content:null; plain map decode preserves null the same way).
+		// content:null; the protocol authority qoderwork2api preserves null
+		// the same way via plain map decode).
 		if trimmed := strings.TrimSpace(string(content)); trimmed == "null" {
 			m.rawContent = string(content)
 		} else if err := json.Unmarshal(content, &s); err == nil {
@@ -212,6 +213,42 @@ func extractLatestUserPrompt(messages []openAIMessage) string {
 	return ""
 }
 
+// latestUserImageParts counts image_url content parts in the LAST user
+// message (0 when its content is a plain string or an unparseable array).
+// History messages are deliberately out of scope: their parts were already
+// forwarded (and ignored upstream) before this guard existed, and an old
+// screenshot in a conversation must not retroactively fail every follow-up.
+func latestUserImageParts(messages []openAIMessage) int {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return imagePartsInContent(messages[i].rawContent)
+		}
+	}
+	return 0
+}
+
+// imagePartsInContent counts parts with type "image_url" in one message's
+// structured content array.
+func imagePartsInContent(rawContent string) int {
+	raw := strings.TrimSpace(rawContent)
+	if !strings.HasPrefix(raw, "[") {
+		return 0
+	}
+	var parts []struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parts); err != nil {
+		return 0
+	}
+	n := 0
+	for _, p := range parts {
+		if p.Type == "image_url" {
+			n++
+		}
+	}
+	return n
+}
+
 // runeSafePrefix truncates to n runes without splitting UTF-8 sequences
 // (upstream truncates business.name to 30 runes the same way).
 func runeSafePrefix(s string, n int) string {
@@ -223,8 +260,8 @@ func runeSafePrefix(s string, n int) string {
 }
 
 // normalizeReasoningEffort validates the OpenAI-style reasoning_effort dial.
-// v0.8.17: the catalog's thinking_config.enabled.efforts advertise per-model
-// level sets that include
+// v0.8.17 (fork libo0118/qoder-custom review): the catalog's
+// thinking_config.enabled.efforts advertise per-model level sets that include
 // "high" and "max" (e.g. DeepSeek-Flash low/high/max, Qwen3.8-Max
 // low/medium/xhigh) — the old low/medium/xhigh whitelist silently dropped the
 // high/max dials and callers got upstream defaults instead. Levels are
@@ -248,6 +285,22 @@ func buildQoderBody(req *openAIRequest, modelKey, userType string) ([]byte, erro
 	}
 
 	prompt := extractLatestUserPrompt(req.Messages)
+	// Issue #37: the QoderWork agent_chat_generation body has NO image field
+	// — the only channels are chat_context.text (the prompt string) and the
+	// messages passthrough, which the upstream gateway flattens to text.
+	// image_url parts therefore cannot reach the model: image-only requests
+	// used to die with the misleading "no user message in request", and
+	// mixed content silently lost the image while the model answered as if
+	// it had considered it. Both now fail explicitly and honestly; the fix
+	// is deliberately a plain error (no StatusCode) so no host version can
+	// re-read it as a credential-level failure — the request shape is the
+	// problem, not the account.
+	if n := latestUserImageParts(req.Messages); n > 0 {
+		return nil, fmt.Errorf(
+			"qoder 通道不支持图像输入（上游 agent_chat_generation 请求体没有图像字段）：最新用户消息携带 %d 个 image_url 部分，无法转发到上游——纯图像消息与图文混排同样会被拒绝；请将视觉请求路由到支持图像输入的提供商/模型。"+
+				" // The qoder channel is text-only (the upstream agent_chat_generation body carries no image field): the latest user message carries %d image_url part(s) that cannot be forwarded — image-only and mixed content are both rejected; route vision requests to a vision-capable provider.",
+			n, n)
+	}
 	if prompt == "" {
 		return nil, fmt.Errorf("no user message in request")
 	}
@@ -263,8 +316,8 @@ func buildQoderBody(req *openAIRequest, modelKey, userType string) ([]byte, erro
 
 	// model_config. 2026-09-19 upstream behavior: every request sends
 	// is_reasoning=true + source="system" (the qwen3.8-flash reasoning chain).
-	// Models that cannot think ignore these fields upstream (verified with a
-	// fabricated model key). source="system" is the real
+	// Models that cannot think ignore these fields upstream (verified by the
+	// reference proxy with a fabricated model key). source="system" is the real
 	// reasoning trigger — without it the gateway never streams reasoning_content.
 	if mc, ok := base["model_config"].(map[string]any); ok {
 		mc["key"] = modelKey
@@ -329,6 +382,20 @@ func buildQoderBody(req *openAIRequest, modelKey, userType string) ([]byte, erro
 		if m.Role == "assistant" && strings.TrimSpace(m.Content) == "" &&
 			assistantCarriesToolCalls(m) && isEmptyAssistantBody(m) {
 			m.Content, m.rawContent, m.contentSet = "Calling tools.", "", true
+		}
+		// OpenAI's "developer" role (o1+/gpt-5 era successor of "system") is
+		// rejected by the gateway — "developer is not one of ['system',
+		// 'assistant', 'user', 'tool', 'function']" (issue #34). The two
+		// independent authorities agree on the mapping: the reference proxy
+		// ships normalize_roles() doing exactly developer→system ("OpenAI 新的
+		// developer 角色等价于 system"), and the gateway's own validator
+		// enumerates the accepted set. Rewritten on the loop's value copy,
+		// never in the caller's request; content and every raw member (name,
+		// tool_calls, ...) ride along untouched. slim-mode detection above
+		// already counts developer as instruction-bearing, so placement here
+		// covers both template and slim paths of execute + execute_stream.
+		if m.Role == "developer" {
+			m.Role = "system"
 		}
 		outMsgs = append(outMsgs, m)
 	}

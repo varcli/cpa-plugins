@@ -29,8 +29,8 @@ const (
 	ErrServer                       // 5xx
 	ErrClient                       // 其他 4xx
 	ErrInputTooLarge                // v0.12.50: 413/过大文案 → 请求级问题，不冷却账号
-	// v0.12.79 (issue #9): 4001 = 模型在当前 function 通道不可用。
-	// 请求级失败：换任何
+	// v0.12.79 (issue #9): 4001 = 模型在当前 function 通道不可用
+	//（trae2api-more IsModelConfigMismatch 语义）。请求级失败：换任何
 	// 账号结果相同，不冷却、不累计 errCount，避免死模型拖垮健康账号。
 	ErrModelUnavailable
 )
@@ -76,8 +76,8 @@ func (e *Error) Error() string {
 }
 
 // bizError 构造业务码错误。v0.12.38 起优先透传上游响应的 message 原文——
-// 此前对一切非零码硬编码
-// "Token 已过期，请重新登录" 并把上游真实 message 丢弃，导致 v0.12.35
+// 此前照抄 cockpit-tools 的兜底文案（rs:2788 对一切非零码硬编码
+// "Token 已过期，请重新登录"）并把上游真实 message 丢弃，导致 v0.12.35
 // 的 1001（实为 Bearer 方案拒绝我们的 token 类别）被误读成 token 过期。
 // 上游 message 为空时才回退到本地兜底文案。9074 归类软限流，
 // 其余非零码按会话失效处理（pool 据此禁用）。
@@ -118,7 +118,8 @@ var inputTooLargeMarkers = []string{
 
 // MsgIndicatesInputTooLarge 判定上游错误文案是否为「输入过大」。
 // v0.12.50: 大输入（上下文超出模型窗口/请求体超网关限制）是请求级问题，
-// 与账号健康无关——命中词表的错误不冷却账号并给明确指引。
+// 与账号健康无关——命中词表的错误不冷却账号并给明确指引（对齐
+// qoder 0.8.11 chatSizeMarkers；Coding2API 400→INVALID 不冷却同哲学）。
 func MsgIndicatesInputTooLarge(s string) bool {
 	lower := strings.ToLower(s)
 	for _, m := range inputTooLargeMarkers {
@@ -148,7 +149,7 @@ func Classify(status int, body string) ErrKind {
 	}
 	// v0.12.48: 4008 quota 也可能裹在非 2xx 响应体里——与流内
 	// SOLOStreamError.Kind 共用同一张判定表（soloPlanLimitCodes），
-	// 避免两条路径对一个码给出两种语义。
+	// 避免两条路径对一个码给出两种语义（对齐 dsh-router-traework 2026-09-15）。
 	if strings.Contains(body, `"code":4008`) {
 		return ErrPlanLimit
 	}
@@ -174,8 +175,8 @@ func Classify(status int, body string) ErrKind {
 		return ErrServer
 	}
 	// v0.12.79 (issue #9): body 带 code=4001（非过大/401/429/404 语义）=
-	// 模型在当前 function 通道不可用。请求级失败：与账号健康无关，不冷却。
-	// 放在账号级状态
+	// 模型在当前 function 通道不可用（trae2api-more IsModelConfigMismatch
+	// 同语义）。请求级失败：与账号健康无关，不冷却。放在账号级状态
 	// （401/429/404）之后做兜底——鉴权失败永远优先按会话失效处理；
 	// 过大判定在其上方，{"code":4001,"msg":"prompt is too long…"} 仍归
 	// ErrInputTooLarge。
@@ -267,7 +268,7 @@ func (c *Client) RefreshTokenIfNeeded(a *auth.Auth, skew time.Duration) (bool, e
 
 // refreshLocked 是 RefreshToken 的持锁内部实现；调用方必须已持有 a 写锁。
 // 任何失败路径都不改写 a 字段，保证旧 refreshToken 可重试。
-// 多源 fallback：依次尝试
+// 多源 fallback（对齐 cockpit-tools build_api_urls）：依次尝试
 // a.APIHost → OAuthHost → 备用 CN 源，避免单一 host 不可达时刷新失败。
 //
 // v0.12.60: ClientID 跟随账号谱系（v0.12.44 2×2 矩阵：ClientID 只由 solo 与
@@ -318,6 +319,12 @@ func (c *Client) refreshLocked(a *auth.Auth) error {
 		// 因为部分源只对特定账号域生效。
 	}
 	if lastErr != nil {
+		// v0.12.75: 根因分类学注释——20101/10101/20403 映射为用户可执行的恢复
+		// 动作（见 ExplainRefreshError）；%w 保持 errors.As/Is 链，Kind/BizCode
+		// 分类语义不变（pool 据此禁用）。
+		if hint := ExplainRefreshError(lastErr); hint != "" {
+			return fmt.Errorf("%w — %s", lastErr, hint)
+		}
 		return lastErr
 	}
 	var resp struct {
@@ -350,6 +357,36 @@ func (c *Client) refreshLocked(a *auth.Auth) error {
 		a.ExpiresAt = time.Now().Add(time.Duration(resp.Result.TokenExpireDuration) * time.Second).Unix()
 	}
 	return nil
+}
+
+// ExplainRefreshError 把一次刷新失败映射为面向用户的根因提示；错误不在
+// 已知分类学内时返回 ""（调用方保持原错误不动）。
+//
+// v0.12.75 错误分类学（2026-10-12 live 实证，trae_live_payfamily_test.go）：
+//   - http 401 code 20101 "refresh token is invalid" —— 死 rt（TRAE_OLD_RT
+//     腿实证）：同账号在别处刷新或登录后旧 refreshToken 即作废；
+//   - http 400 code 10101 "refresh token is not matched to the client" ——
+//     服务器在 ExchangeToken 交换层门禁 rt↔client 谱系（leg2 实证）；
+//   - http 401 code 20403 "Token device not match" —— 服务端绑定设备与
+//     本地 DeviceID/密钥不匹配（CheckLogin 副发现：绑定设备 kxrldxj552p5k6
+//     ≠ 凭据 deviceId）。
+//
+// Msg 是 doJSON 塞入的 body 片段；ResponseMetadata 嵌套信封为大写
+// "Code" 形状，宽容顶层小写 "code" 形状。nil 或非 *Error 返回 ""。
+func ExplainRefreshError(err error) string {
+	ue, ok := err.(*Error)
+	if !ok || ue == nil {
+		return ""
+	}
+	switch {
+	case strings.Contains(ue.Msg, `"Code":"20101"`) || strings.Contains(ue.Msg, `"code":20101`):
+		return "凭证链已在服务端失效（code 20101 refresh token invalid：同账号在别处刷新或登录后旧 refreshToken 即作废）——请在面板退出该账号并重新登录，或重新导入最新凭证"
+	case strings.Contains(ue.Msg, `"Code":"10101"`) || strings.Contains(ue.Msg, `"code":10101`):
+		return "refreshToken 与 OAuth client 谱系不匹配（code 10101）——auth 文件 variant 与签发 client 不符或 token 已被跨类交换污染，请重新登录"
+	case strings.Contains(ue.Msg, `"Code":"20403"`) || strings.Contains(ue.Msg, `"code":20403`):
+		return "设备绑定不匹配（code 20403 Token device not match）——服务端绑定设备与本地 DeviceID/密钥不一致，绑定续期不可用；如签到持续 9074 请重新登录以重绑设备"
+	}
+	return ""
 }
 
 // normalizeExpiresAt 把 ExchangeToken 的 TokenExpireAt 归一化为 Unix 秒。
@@ -418,7 +455,7 @@ type ModelInfo struct {
 // DeepSeek-V4-{Flash,Pro}-Official 一起误杀 —— 两者在同一 solo_work_lite 通道
 // 200 正常出话（报告者三凭据复现；判别依据：目录里 -Official 段是与非正式
 // 死键不同的独立 config，命名即"正式版"条目）。改为精确 config_name 集合，
-// 只收当场验证过的死键。代价是新死模型会先放行，而流内 4001 已是
+// 只收当场验证过的死键。代价是新死模型会先放行，而 PR #11 之后流内 4001 已是
 // 可降级的 404 失败（不再是 200 空壳），放行风险可接受；确认新的死模型后在
 // 这里补名字。大小写不敏感（目录同时出现 DeepSeek-V4-Flash 与 deepseek-v4-flash
 // 两种写法）。
@@ -523,11 +560,11 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 //
 // 其中 credits = 每日签到奖励数额（官方卡片 "Daily check-in: {credits} credits"），
 // 并非可花余额——此前误标"签到钱包"（v0.12.30 时代的误读）。
-// 旧 GET + did query 在 09-04 上游收紧前可用，现已弃用。
+// 旧 GET + did query（cockpit-tools rs:2761）在 09-04 上游收紧前可用，现已弃用。
 // 鉴权双方案（v0.12.38）：Cloud-IDE-JWT 优先，非 9074 失败回退 Bearer 一次
 // （ugCheckinSchemes/ugCheckinOnce）。
 // 返回完整字段：CheckedIn / Credits / Enable + 业务码 Code（用于 9074 限流识别）。
-// 上游 code!=0 语义：
+// 对齐上游 code!=0 语义（trae_account_token_injection.rs:2786-2791）：
 // 非零业务码 → 返回错误（上游 message 透传），绝不能当成 "未签到" 静默通过。
 // 9074（活动校验拒绝）作为 *Error{BizCode:9074} 返回，调用方可识别重试。
 type CheckinStatusResult struct {
@@ -553,16 +590,17 @@ type CheckinStatusResult struct {
 }
 
 // v0.12.38: 签到鉴权双方案。证据链复盘：
-//   - 官方客户端 claim = POST {} + Cloud-IDE-JWT + x-device-id（实测到账）。
+//   - 官方客户端 claim = POST {} + Cloud-IDE-JWT + x-device-id（BlueChonk
+//     FINDINGS §五 实测到账；trae-mate/traework2api/trae-work-checkin 同构）。
 //   - 我方 v0.12.34 Cloud-IDE-JWT 下 status 读接口实测 code=0（积分显示正确）。
-//   - v0.12.35 改用 Bearer 后 status 反报
-//     biz_code=1001。官方客户端托管会话的 token 与我们
+//   - v0.12.35 照搬 cockpit-tools（rs:2761,2859）改 Bearer 后 status 反报
+//     biz_code=1001。cockpit-tools 的 token 来自官方客户端托管会话，与我们
 //     自走 OAuth（ClientID ono9krqynydwx5）ExchangeToken 的 token 类别不同，
 //     其 Bearer 经验不可平移；同期聊天/积分查询（Cloud-IDE-JWT）均正常，
 //     排除 token 过期。
 //
 // 策略：Cloud-IDE-JWT 优先（官方客户端实证方案）；非 9074 失败回退 Bearer
-// 一次（兼容该类 token 类别）。每次尝试的 biz code 与
+// 一次（兼容 cockpit-tools 所代表的 token 类别）。每次尝试的 biz code 与
 // 上游 message 全量落日志，SchemeUsed 记入结果供面板诊断。
 // v0.12.40 曾在此另设设备头（x-device-brand/type/os-version + x-app-version
 // 2.3.81345，out/main.js fb() 反编译值）—— v0.12.45 起全部下沉到
@@ -649,7 +687,7 @@ func ugCheckinSchemes() []string {
 }
 
 // checkinDeviceDigits 签到设备号十进制位数。
-// 证据矩阵（2026-09-20 定稿观测，此前被推翻两次）：
+// 证据矩阵（Coding2API credential.py 2026-09-20 定稿观测，此前被推翻两次）：
 // 同一账号 claim 结果——登录 deviceId(hex32) ✗、派生定值 16 位数字 ✗×4、
 // 随机 16 位数字 ✓、登录 machineId(hex32) ✗、空串 → 9004 参数错误。
 // 数字串是必要条件而非充分条件（9074 与具体取值关系未定），故不猜格式，
@@ -813,7 +851,7 @@ func (c *Client) CheckinStatus(a *auth.Auth, deviceID ...string) (*CheckinStatus
 // 响应 {code, message}，code!=0 → 错误；领取成功后由调用方重查状态。
 // 响应中的 credits/add_credits/reward 等数值字段作为"入账证据"带回
 // （ClaimCredits），便于诊断"code=0 但未到账"。
-// v0.12.35 曾改 Bearer，实测 status 反遭
+// v0.12.35 曾改 Bearer（照搬 cockpit-tools rs:2859），实测 status 反遭
 // biz_code=1001——其 token 来自官方客户端托管会话，与自走 OAuth 的 token
 // 类别不同，Bearer 经验不可平移（详见 CheckinStatus 上方证据链）。
 // v0.12.38: 鉴权随 CheckinStatus 统一走双方案探测（Cloud-IDE-JWT 优先，
@@ -901,11 +939,11 @@ func pickCreditField(data []byte) *int64 {
 }
 
 // EntitlementPack represents one entry in user_entitlement_pack_list.
-// 用量模型：quota 字段位于
+// 对齐 cockpit-tools src/types/trae.ts 的用量模型：quota 字段位于
 // entitlement_base_info.quota 或 product_extra.{subscription_extra,package_extra}.quota
 // 三层中的任意一层（getPackQuota 的多路径探测）；usage 位于 pack.usage。
 // v0.12.34 注：quota 里还有 credits_limit（SOLO 积分计费额度，官方 cashier
-// 以它为准）。
+// 与 traework2api 以它为准；cockpit-tools 上游不读，因其面向订阅制）。
 type EntitlementPack struct {
 	EntitlementBaseInfo struct {
 		ProductType  int       `json:"product_type"` // 0=Free, 1=Pro, 4=Pro+, 5=Pro+CN, 6=Ultra, 8=Lite, 9=Trial, 100=CNExpress
@@ -932,8 +970,8 @@ type PackQuota struct {
 	BonusUsageLimit              *int64 `json:"bonus_usage_limit"`
 	PremiumModelFastRequestLimit *int64 `json:"premium_model_fast_request_limit"` // -1=unlimited
 	// v0.12.34: SOLO 积分计费的额度字段——官方 cashier 用它减 credits_amount
-	// 得"剩余积分"（-1=不限）。官方 Web
-	// main.js 也以它为准，SOLO 积分制账户必须读。
+	// 得"剩余积分"（-1=不限）。cockpit-tools 上游不读它，但官方 Web
+	// main.js 与 traework2api 都以它为准，SOLO 积分制账户必须读。
 	CreditsLimit *int64 `json:"credits_limit"`
 }
 
@@ -999,7 +1037,8 @@ type EntUsageResult struct {
 	UserEntitlementPackList []EntitlementPack `json:"user_entitlement_pack_list"`
 }
 
-// UserEntUsage 聚合积分 + 识别当前生效 pack：
+// UserEntUsage 聚合积分 + 识别当前生效 pack。
+// 对齐 cockpit-tools trae_account_token_injection.rs apply_usage_response：
 //  1. 过滤废弃 pack (product_type == 3 PROMO_CODE)
 //  2. 过滤隐藏/已取消 pack (is_hide || status==3)
 //  3. 按 CN/Intl 优先级选最高 pack（100→6→5/4→1/9→8→0）
@@ -1022,7 +1061,7 @@ func (c *Client) UserEntUsage(a *auth.Auth) (*EntUsageResult, error) {
 	return &resp, nil
 }
 
-// FastRequestUsage 汇总速通用量：
+// FastRequestUsage 对齐 cockpit-tools src/types/trae.ts getFastRequestUsage：
 // 对可见 active pack 求 premium_model_fast_request_limit 总和与
 // premium_model_fast_amount 总和；available = limit - used（limit 含 -1 → 全局无限）。
 // hasEvidence=false 表示 pack 里完全没有 fast-request 字段（不能当作 0 次）。
@@ -1147,7 +1186,8 @@ func CreditsPoolUsage(packs []EntitlementPack, isCreditsBilling bool) CreditsPoo
 // ---- v0.12.29: ide_user_pay_status（CN 套餐 detail/quota 数据源）----
 
 // PayStatusResult mirrors the CN /trae/api/v1/pay/ide_user_pay_status response,
-// parsed tolerantly: top-level detail/quota first, then
+// parsed tolerantly exactly like upstream cockpit-tools
+// getCnEntitlementDetailFields (trae.ts): top-level detail/quota first, then
 // entitlementInfo.detail/quota, then originPayStatusData.detail/quota.
 type PayStatusResult struct {
 	Code int `json:"code"`
@@ -1273,7 +1313,7 @@ func (c *Client) PayStatus(a *auth.Auth) (*PayStatusResult, error) {
 }
 
 // UsageSummary 汇总一次 UserEntUsage 的展示/评分所需数值。
-// 展示语义（CN 规则）：
+// 展示语义对齐 cockpit-tools TraeAccountsPage.tsx 的 CN 规则：
 //   - 速通证据存在 → UsageModel="fast"，Remain=fast 可用次数（-1=无限）
 //   - 选中包 quota 可解析 → UsageModel="basic"，Remain=quota-usage（含 bonus）
 //   - 两者都无 → UsageModel="unknown"，RemainKnown=false（面板显示 "--"，绝不猜测 0）
@@ -1359,7 +1399,7 @@ func PackListRemain(packs []EntitlementPack, isCN bool) (score int64, known bool
 	return sum.Remain, true
 }
 
-// SelectActivePack selects the active pack:
+// SelectActivePack applies cockpit-tools apply_usage_response logic:
 //   - Filter out product_type==3 (PROMO_CODE)
 //   - Filter out is_hide==true || status==3 (cancelled)
 //   - Pick highest-priority pack by CN or Intl order
@@ -1404,6 +1444,7 @@ func SelectActivePack(packs []EntitlementPack, isCN bool) *EntitlementPack {
 }
 
 // ProductTypeIdentity maps product_type to a human-readable plan identity.
+// 对齐 cockpit-tools usage_identity_from_product_type。
 func ProductTypeIdentity(productType int, isCN bool) string {
 	switch productType {
 	case 100:
@@ -1432,15 +1473,15 @@ func ProductTypeIdentity(productType int, isCN bool) string {
 }
 
 // IsRateLimit9074 returns true if the business code indicates Trae rate limiting
-// (code 9074 = "当前参与用户太多，请稍后再试"). It is usually treated as a
-// generic error; this plugin
+// (code 9074 = "当前参与用户太多，请稍后再试"). The 3 reference projects (cockpit-tools,
+// 9router, OmniRoute) all treat this as a generic error; cpa-multi-plugins
 // exposes it explicitly so callers can apply exponential backoff.
 func IsRateLimit9074(code int32) bool {
 	return code == 9074
 }
 
 // GetUserInfo 查询账号信息（登录用）。多源 fallback：依次尝试账号
-// apiHost → OAuthHost → 备用源。
+// apiHost → OAuthHost → 备用源（对齐 cockpit-tools build_api_urls）。
 func (c *Client) GetUserInfo(a *auth.Auth) (uid, nickname, enterpriseID string, err error) {
 	var raw json.RawMessage
 	uid, nickname, enterpriseID, raw, err = c.GetUserInfoFull(a)
@@ -1449,10 +1490,10 @@ func (c *Client) GetUserInfo(a *auth.Auth) (uid, nickname, enterpriseID string, 
 }
 
 // GetUserInfoFull v0.12.44: GetUserInfo plus the raw response body. The
-// Result carries the rich profile
+// Result carries the rich profile cockpit-tools keeps as trae_profile_raw
 // (AvatarUrl / Region / AIRegion / TenantID / NonPlainTextMobile /
-// RegisterTime / UtmInfo — live-verified 2026-09-06), which the login path
-// now persists for credential parity
+// RegisterTime / UtmInfo — live-verified against a cockpit-tools export
+// 2026-09-06), which the login path now persists for credential parity
 // instead of discarding all but three fields.
 func (c *Client) GetUserInfoFull(a *auth.Auth) (uid, nickname, enterpriseID string, raw json.RawMessage, err error) {
 	body := map[string]any{"ReqSource": "IDE", "IDEVersion": IdeVersion}
@@ -1490,7 +1531,7 @@ func (c *Client) GetUserInfoFull(a *auth.Auth) (uid, nickname, enterpriseID stri
 // CheckLoginResult is the flattened view of the CheckLogin response
 // (v0.12.44). Raw keeps the full envelope for diagnostics; the response shape
 // below is live-verified against the official client's stored trae_server_raw
-// — Result{IsLogin, BoundDeviceID, DeviceBindStatus,
+// (cockpit-tools import) — Result{IsLogin, BoundDeviceID, DeviceBindStatus,
 // Host, ExpiredAt, Region, AIRegion, AIHost, UserID, MigrateToSG}.
 type CheckLoginResult struct {
 	IsLogin          bool
@@ -1505,7 +1546,8 @@ type CheckLoginResult struct {
 }
 
 // CheckLogin probes the account's login state and SERVER-BOUND device
-// (POST /cloudide/api/v3/trae/CheckLogin — same cloudide family and auth
+// (POST /cloudide/api/v3/trae/CheckLogin, cockpit-tools
+// trae_account_core_refresh.rs:1035-1045 — same cloudide family and auth
 // scheme as GetUserInfo). The bound-device echo is the ground truth for the
 // device-binding health of a credential: a checkin that presents a deviceId
 // other than BoundDeviceID is a plausible risk-control trigger (9074), so
@@ -1542,8 +1584,8 @@ func (c *Client) CheckLogin(a *auth.Auth) (*CheckLoginResult, error) {
 			ExpiredAt        any    `json:"ExpiredAt"`
 		} `json:"Result"`
 		// Top-level echoes (live export: Result.AIRegion is empty while the
-		// response root carries AIRegion/loginRegion/storeRegion — the
-		// routing context is merged the same way).
+		// response root carries AIRegion/loginRegion/storeRegion — cockpit
+		// merges the routing context the same way).
 		TopAIRegion string `json:"AIRegion"`
 		TopRegion   string `json:"storeRegion"`
 	}

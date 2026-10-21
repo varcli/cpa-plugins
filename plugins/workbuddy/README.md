@@ -42,6 +42,14 @@ dashboard.
   dialer (system + DoH DNS cross-check, multi-IP fallback with dead-IP memory,
   Linux MSS clamp). `proxy-url` from CPA `config.yaml` and the `HTTPS_PROXY`
   environment variable are both honored.
+- **Realm-unconditional conversation headers** — the official-client
+  conversation headers are sent on EVERY realm (not just Global), clearing the
+  upstream 11128 channel gate for Intl and CN as well (#43/#44/#45).
+- **Daily-quota cooldown tiers** — upstream quota failures park only the
+  (credential, model) pair for a bounded window instead of disabling the whole
+  account; `finish_reason` from the upstream is passed through unchanged (#36).
+- **Pool rotation + vision honesty** — issue #35 rotation and #37's explicit
+  vision-unsupported rejection instead of a silent empty answer.
 - **Split-channel build** — `-ldflags "-X main.providerName=codebuddy-intl"`
   produces a per-variant plugin (own panel entry + auth namespace + pinned
   login realm); the default build stays unified.

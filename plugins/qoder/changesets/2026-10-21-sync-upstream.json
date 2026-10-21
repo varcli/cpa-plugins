@@ -1,0 +1,1 @@
+{"bump": "minor", "note": "同步上游 v0.8.64~v0.8.65：① 处理 10605 RESOURCE_LIMIT 排队票据——按 retryAfterSeconds 等待并重发（最多 3 轮，队列等待对调用方不可见），队列耗尽后给可读的 queue_limit 文案并只冷却（凭据,模型）对 60s；新增 queue_retry.go。② OpenAI developer 角色归一为 system（修复 #34）。③ 图像输入支持：新增 image_upload.go（上传/引用链路）与 body.go 多模态构造，配套 vision 拒绝的诚实文案（#37）。④ 每日轮次可见性滞后的自愈（v0.8.65）。⑤ 流式执行重构（stream.go），携带排队重试与帧级错误分类。"}

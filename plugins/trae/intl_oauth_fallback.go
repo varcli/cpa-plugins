@@ -1,18 +1,20 @@
-// intl_oauth_fallback.go: multi-endpoint OAuth fallback helpers to fix
-// "404 page not found" during OAuth login.
+// oauth_fallback.go: multi-endpoint OAuth fallback helpers, ported from
+// cockpit-tools trae_oauth.rs to fix "404 page not found" during OAuth login.
 //
-// Fixes applied:
-//   - intlensureHTTPSScheme: a bare domain gets an https:// prefix.
+// Fixes applied (all mirror cockpit-tools behavior):
+//   - intlensureHTTPSScheme: cockpit-tools ensure_https_url (trae_oauth.rs:1117-1126).
 //     GetLoginGuidance returns LoginHost as a BARE domain ("www.trae.ai"); the
 //     login URL must get an https:// prefix or the panel/browser resolves it as
 //     a RELATIVE URL against the CPA server itself → gin default 404 body
 //     "404 page not found".
-//   - intlrequestLoginGuidance: tries every GetLoginGuidance endpoint in the
+//   - intlrequestLoginGuidance: cockpit-tools request_login_guidance
+//     (trae_oauth.rs:1762-1848) — tries every GetLoginGuidance endpoint in the
 //     platform list before failing. Intl candidates: api.marscode.com →
 //     api.trae.ai → www.trae.ai, so a single-host outage/404 no longer blocks
 //     the whole login flow.
-//   - intlcandidateAPIOorigins + intlbuildAPIURLs: derives candidate API
-//     origins from the callback loginHost (rewriting
+//   - intlcandidateAPIOorigins + intlbuildAPIURLs: cockpit-tools candidate_api_origins /
+//     candidate_account_api_origins (trae_oauth.rs:1994-2049, 673-689) —
+//     derives candidate API origins from the callback loginHost (rewriting
 //     www. → api.), then appends the Intl account-API defaults
 //     (grow-normal.trae.ai / growsg-normal.trae.ai). ExchangeToken/GetUserInfo
 //     try each URL in turn until one returns an access token.
@@ -29,19 +31,21 @@ import (
 	"time"
 )
 
-// Platform GetLoginGuidance endpoint lists.
+// Platform GetLoginGuidance endpoint lists — cockpit-tools
+// TRAE_LOGIN_GUIDANCE_URLS (trae_oauth.rs:36-39).
 var intlLoginGuidanceURLs = []string{
 	"https://api.marscode.com/cloudide/api/v3/trae/GetLoginGuidance",
 	"https://api.trae.ai/cloudide/api/v3/trae/GetLoginGuidance",
 	"https://www.trae.ai/cloudide/api/v3/trae/GetLoginGuidance",
 }
 
-// Intl default API origins:
+// Intl default API origins — cockpit-tools default_account_api_config
+// (trae_oauth.rs:683-688) + candidate_api_origins Intl branch (2015-2022):
 // account API normal/sg first, then the classic api hosts.
-// grow-normal.traeapi.us is the upstream's newer US direct origin;
-// live-verified 2026-09-03 that the
+// grow-normal.traeapi.us = cockpit-tools TRAE_ACCOUNT_API_ORIGIN_USTTP (the
+// upstream's newer US direct origin; live-verified 2026-09-03 that the
 // classic api.* hosts 404 /trae/api/v3/oauth/ExchangeToken at the TLB edge,
-// so every extra real origin widens the fallback without any downside.
+// so every extra real origin widens the fallback without any downside).
 var intlDefaultOrigins = []string{
 	"https://grow-normal.trae.ai",
 	"https://growsg-normal.trae.ai",
@@ -50,7 +54,7 @@ var intlDefaultOrigins = []string{
 	"https://api.trae.ai",
 }
 
-// intlensureHTTPSScheme: a bare domain such
+// intlensureHTTPSScheme mirrors cockpit-tools ensure_https_url: a bare domain such
 // as "www.trae.ai" gets an https:// prefix. Without this the verification URI
 // returned to the panel is scheme-less and the browser treats it as a relative
 // path on the CPA server → "404 page not found".
@@ -65,7 +69,7 @@ func intlensureHTTPSScheme(raw string) string {
 	return "https://" + strings.TrimLeft(normalized, "/")
 }
 
-// intlcandidateAPIOorigins builds the candidate origin list:
+// intlcandidateAPIOorigins mirrors cockpit-tools candidate_api_origins:
 //  1. origin derived from the callback loginHost (scheme + host);
 //  2. if that host starts with "www.", also the api. variant;
 //  3. platform default origins.
@@ -134,10 +138,10 @@ func intldedupKeepOrder(values []string) []string {
 	return out
 }
 
-// intlrequestLoginGuidance POSTs
+// intlrequestLoginGuidance mirrors cockpit-tools request_login_guidance: POST
 // {loginTraceID, login_trace_id} to every platform endpoint until one returns
 // a parseable LoginHost. (CN additionally degrades to a default host; Intl
-// surfaces the aggregated error.)
+// surfaces the aggregated error, matching cockpit-tools.)
 // intlLoginGuidanceProbeTimeout bounds each GetLoginGuidance endpoint probe.
 // 5s per endpoint (parity with the CN flow, v0.12.9): guidance runs
 // SYNCHRONOUSLY inside the browser-facing auth-url request — at 15s the
@@ -182,7 +186,7 @@ func intlrequestLoginGuidance(cn bool, loginTraceID string) (loginHost string, l
 		errs = append(errs, fmt.Sprintf("%s => response missing LoginHost (body=%s)", endpoint, intltruncate(string(raw), 120)))
 	}
 	// Total failure degrades to the default Intl login host instead of
-	// erroring out (CN does the same with its default).
+	// erroring out (cockpit-tools parity: CN does the same with its default).
 	// The guidance call is best-effort — its only job is picking the login
 	// page domain; the actual login happens in the user's browser.
 	log.Printf("[Trae OAuth] intl login guidance failed (%s) — falling back to default login host %s",
@@ -212,7 +216,7 @@ func intlsurfaceUpstreamError(data []byte) string {
 
 // intlexchangeTokenCandidates tries each candidate URL in turn for the auth-code
 // ExchangeToken call and returns the first 2xx JSON body that carries an
-// access token (any of the accepted field names). Every failure
+// access token (any of the field names cockpit-tools accepts). Every failure
 // is recorded so the caller can surface a meaningful error.
 func intlexchangeTokenCandidates(urls []string, body []byte) (raw []byte, err error) {
 	var errs []string
@@ -235,6 +239,14 @@ func intlexchangeTokenCandidates(urls []string, body []byte) (raw []byte, err er
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
 		if resp.StatusCode >= 400 {
+			if code, msg := upstreamErrorCode(data); code != "" {
+				// v0.12.76: 业务性拒绝（带 Volcengine ResponseMetadata.Error.Code 的 4xx）是
+				// 账号/请求状态，与候选源无关 —— 立即短路，不再向其余源多烧失败请求
+				//（issue #38 服务端安全层教训，对齐 v0.12.74 刷新路径的单源决策；
+				// CN 侧 oauth_fallback.go 同款）。网络错误/404/5xx/HTML 体保持原回退行为。
+				return nil, fmt.Errorf("ExchangeToken failed: %s => HTTP %d upstream code=%s (%s)%s",
+					u, resp.StatusCode, code, intltruncate(msg, 160), loginExchangeErrorHint(code))
+			}
 			// 404 page not found and friends: try the next candidate.
 			// v0.12.24: surface the Volcengine-style
 			// ResponseMetadata.Error code+message (e.g. 20405 +
@@ -253,8 +265,8 @@ func intlexchangeTokenCandidates(urls []string, body []byte) (raw []byte, err er
 	return nil, fmt.Errorf("ExchangeToken failed: %s", strings.Join(errs, " | "))
 }
 
-// intlextractExchangeAccessToken checks
-// Result/{AccessToken,accessToken,Token,token} plus top-level variants.
+// intlextractExchangeAccessToken mirrors cockpit-tools extract_exchange_access_token:
+// checks Result/{AccessToken,accessToken,Token,token} plus top-level variants.
 func intlextractExchangeAccessToken(raw []byte) string {
 	var top map[string]any
 	if err := json.Unmarshal(raw, &top); err != nil {
@@ -291,7 +303,8 @@ func intljsonString(v any) string {
 	return ""
 }
 
-// intlbuildOfficialDeviceInfo builds the DeviceInfo for ExchangeToken. The
+// intlbuildOfficialDeviceInfo builds the DeviceInfo for ExchangeToken, mirroring
+// cockpit-tools build_official_device_info (trae_oauth.rs:2087-2118). The
 // previous implementation sent a bare {DeviceId, MachineId} map with RANDOM
 // hex ids — mismatching the machine/device ids embedded in the login URL and
 // breaking the device-binding expectations upstream.
@@ -317,7 +330,8 @@ func intlbuildOfficialDeviceInfo(deviceID, machineID, platformCode, deviceName, 
 	}
 }
 
-// intlIsUsttpUserTag: the callback's userTag parameter routes USTTP
+// intlIsUsttpUserTag mirrors cockpit-tools is_usttp_user_tag
+// (trae_oauth.rs:717-725): the callback's userTag parameter routes USTTP
 // (US direct-connect) accounts to the grow-normal.traeapi.us origin.
 func intlIsUsttpUserTag(userTag string) bool {
 	switch strings.ToLower(strings.TrimSpace(userTag)) {
@@ -327,8 +341,9 @@ func intlIsUsttpUserTag(userTag string) bool {
 	return false
 }
 
-// intlauthCodeExchangeURLs builds the AuthCode ExchangeToken candidate list:
-// the official client exchanges the auth code
+// intlauthCodeExchangeURLs builds the AuthCode ExchangeToken candidate list,
+// mirroring cockpit-tools candidate_account_api_origins
+// (trae_oauth.rs:2039-2049): the official client exchanges the auth code
 // EXCLUSIVELY against the account-API origins — sg (default for i18n row
 // users, growsg-normal.trae.ai), us (also growsg-normal), usttp
 // (grow-normal.traeapi.us for US-direct accounts) — and NEVER against the

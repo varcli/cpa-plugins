@@ -152,7 +152,9 @@ func buildModelGroup(variant string, entries []*variantCatalogEntry, refresh boo
 		if pick := pickRefreshCredential(entries); pick != nil {
 			models := refreshVariantCatalog(pick)
 			if len(models) > 0 {
-				g.Models = modelGroupEntries(models)
+				// v0.13.0: fresh discovery returns bare upstream ids; advertise them in
+				// the plugin's model namespace like every other serve path.
+				g.Models = modelGroupEntries(prefixModelInfos(models))
 				g.Count = len(g.Models)
 				g.Source = "refreshed"
 				g.FetchedAt = time.Now().UTC().Format(time.RFC3339)

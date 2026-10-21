@@ -1,15 +1,10 @@
-// Package main implements the trae CLIProxyAPI dynamic plugin.
+// Package main implements the trae-solo-cn CLIProxyAPI dynamic plugin.
 //
-// trae wraps the three Trae upstreams as one cliproxy provider, routing per
-// credential variant: Trae Code CN (api.trae.cn inline_chat), Trae SOLO CN
-// (trae-api-cn.mchost.guru + api.trae.cn, function=solo_work_lite) and Trae
-// Intl (api.marscode.com + core-normal.trae.ai, Web SOLO). It provides Trae
-// OAuth (GetLoginGuidance + AuthCode ExchangeToken), Cloud-IDE-JWT auth,
-// streaming executor, daily check-in via checkin_credits, v2 credit API
-// query, and a multi-account pool with credit-aware scheduler.
-//
-// Protocol layer for the CPA dynamic plugin C ABI with OAuth login flow,
-// executor, scheduler, checkin, token keepalive, and credit lifecycle.
+// trae-solo-cn wraps TRAE Work CN / SOLO CN (trae-api-cn.mchost.guru +
+// api.trae.cn) as a cliproxy provider: Trae OAuth (GetLoginGuidance +
+// AuthCode ExchangeToken), Cloud-IDE-JWT auth, llm_utils_chat +
+// function=solo_work_lite chat executor, daily check-in via checkin_credits,
+// v2 credit API query, multi-account pool with credit-aware scheduler.
 package main
 
 /*
@@ -111,7 +106,7 @@ const (
 	// Account cache TTL for credits/checkin status.
 	accountCacheTTL = 5 * time.Minute
 
-	// ---- OAuth constants (SOLO CN platform) ----
+	// ---- cockpit-tools aligned OAuth constants (SOLO CN platform) ----
 	// GetLoginGuidance URL — first entry of TRAE_CN_LOGIN_GUIDANCE_URLS.
 	oauthLoginGuidanceURL = "https://api.trae.cn/cloudide/api/v3/trae/GetLoginGuidance"
 	// ExchangeToken base URL — /trae/api/v3/oauth/ExchangeToken (NOT /cloudide/api/v3/trae/).
@@ -127,7 +122,7 @@ const (
 	oauthPlatformCode  = "IDE_PC" // cn variant
 	oauthHideSaasLogin = false    // cn variant
 
-	// Default device fingerprint values.
+	// Default device fingerprint values (mirrors cockpit-tools defaults).
 	oauthPluginVersion = "1.0.0"
 	oauthDeviceName    = "DESKTOP-CPASOLO"
 	oauthDeviceType    = "windows"
@@ -137,9 +132,18 @@ const (
 	oauthAppType       = "trae"
 )
 
-// The plugin release version is the single `Version: "x.y.z"` literal in
-// buildRegistration: release.go locates the version to bump by regex and
-// requires exactly one match per plugin, so do not inline another one.
+// pluginVersionLiteral is the single `Version: "x.y.z"` literal the release
+// tooling rewrites (scripts/release.go globs plugins/<id>/*.go at the top
+// level only, and requires exactly one match). The registration self-reports
+// `version`, which mirrors this literal, so the built plugin can never drift
+// from the version the manifest was bumped to.
+var pluginVersionLiteral = struct {
+	Version string
+}{Version: "0.12.78"}
+
+// version is what the plugin self-reports to the host.
+var version = pluginVersionLiteral.Version
+
 var (
 	hostAPI *C.cliproxy_host_api
 
@@ -167,7 +171,7 @@ type accountCacheEntry struct {
 	credits int64
 	checkin *checkinStatus
 	fetched time.Time
-	// v0.12.28: 用量模型快照。
+	// v0.12.28: 用量模型快照（对齐 cockpit-tools trae.ts）。
 	// usageModel: fast|basic|unknown；remainKnown=false 时面板显示 "--"
 	// 而不是把未知渲染成 0（"剩余 00%" 的显示根因）。
 	usage       upstream.UsageSummary
@@ -482,7 +486,7 @@ func buildRegistration() registrationPayload {
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             providerName,
-			Version:          "0.9.0",
+			Version:          version,
 			Author:           "varcli",
 			GitHubRepository: "https://github.com/varcli/cpa-plugins",
 			Logo:             pluginLogoURL,
@@ -520,12 +524,6 @@ func buildRegistration() registrationPayload {
 // variant so the host can never route a chat request across credential
 // classes (v0.12.2). cn keeps plain IDs (back-compat with trae-cn users);
 // solo appends "-solo"; intl appends "-intl" (handled in intl_main.go).
-//
-// v0.13.0: the "<provider>/" model prefix (model_prefix.go) composes with
-// these suffixes — every advertised id is addModelPrefix(base + suffix), e.g.
-// "trae/claude-sonnet-4-intl" or "trae/kimi-k2.6-solo". The prefix is what
-// keeps a stray/legacy snapshot from another namespace out and groups the
-// models under trae; the suffix keeps the variants apart.
 const (
 	modelSuffixSolo = "-solo"
 	modelSuffixIntl = "-intl"
@@ -690,13 +688,8 @@ func modelsForVariant(a *auth.Auth, storageJSON []byte) []pluginapi.ModelInfo {
 		}
 		seen[m.ID] = true
 		out = append(out, pluginapi.ModelInfo{
-			ID:   variantModelID(m.ID, suffix),
-			Name: m.Name,
-			// v0.13.0: OwnedBy is what the host emits as the model's group on
-			// the CPA models page. Leaving it empty (the pre-0.13.0 dynamic
-			// path) landed every trae model in the "other" bucket — kiro and
-			// workbuddy always set it. Fixed here and in every other builder.
-			OwnedBy:             providerName,
+			ID:                  m.ID + suffix,
+			Name:                m.Name,
 			ContextLength:       m.ContextWindow,
 			MaxCompletionTokens: m.MaxTokens,
 		})
@@ -747,7 +740,7 @@ func staticToModelInfos(known []staticModel) []pluginapi.ModelInfo {
 	out := make([]pluginapi.ModelInfo, 0, len(known))
 	for _, m := range known {
 		out = append(out, pluginapi.ModelInfo{
-			ID:            addModelPrefix(m.id),
+			ID:            m.id,
 			Name:          m.name,
 			ContextLength: m.ctx,
 			OwnedBy:       providerName,
@@ -934,6 +927,8 @@ func handleParseAuth(request []byte) ([]byte, error) {
 }
 
 // handleStartLogin initiates Trae OAuth via GetLoginGuidance + PKCE.
+// Mirrors cockpit-tools trae_oauth.rs:1762-1845 (GetLoginGuidance) and
+// :1851-1945 (build_verification_uri).
 //
 // Flow:
 //  1. Generate login_trace_id (UUID v4) and PKCE pair (verifier + challenge).
@@ -972,7 +967,7 @@ func startLoginWithVariant(request []byte, lv string) ([]byte, error) {
 	// The host resource route and callback_public_host can therefore never
 	// produce an accepted callback: always bind the in-process loopback
 	// listener and advertise http://127.0.0.1:<port>/authorize (the official
-	// IDE uses the identical shape).
+	// IDE and cockpit-tools use the identical shape).
 	ln, err := netListen("tcp", fmt.Sprintf("%s:%d", loadedCallbackBind(), loadedCallbackPort()))
 	if err != nil {
 		return nil, fmt.Errorf("allocate callback port (bind=%s port=%d): %w — with a fixed callback_port another process may be holding it", loadedCallbackBind(), loadedCallbackPort(), err)
@@ -980,8 +975,8 @@ func startLoginWithVariant(request []byte, lv string) ([]byte, error) {
 	port := ln.Addr().(*netTCPAddr).Port
 	cbURL := fmt.Sprintf("http://127.0.0.1:%d/authorize", port)
 
-	// Step 3: POST GetLoginGuidance with multi-endpoint fallback.
-	// CN tries api.trae.cn →
+	// Step 3: POST GetLoginGuidance with multi-endpoint fallback
+	// (cockpit-tools request_login_guidance). CN tries api.trae.cn →
 	// api.trae.com.cn → www.trae.cn and degrades to the default login
 	// host on total failure instead of erroring out.
 	loginHost, err := requestLoginGuidance(true, loginTraceID)
@@ -991,8 +986,15 @@ func startLoginWithVariant(request []byte, lv string) ([]byte, error) {
 	}
 
 	// Step 5: Build verification URI with PKCE challenge.
-	deviceID := newDeviceID()
-	machineID := newMachineID()
+	// v0.12.76→v0.12.77: this identity is now only the install's
+	// BOOTSTRAP device — a synthetic identity for the authorization-page
+	// URL, built before anyone knows which account is logging in. The
+	// identity that gets REGISTERED server-side is derived PER ACCOUNT at
+	// the callback (applyDerivedIdentityCN/Intl, see device_identity.go)
+	// from the userInfo echo; the exchange points then carry it through
+	// the ctx/pending record.
+	ident := ensureLoginDeviceIdentity(host.AuthDir, lv)
+	deviceID, machineID := ident.DeviceID, ident.MachineID
 	verificationURI := buildVerificationURI(loginHost, verificationURIParams{
 		AuthFrom:      oauthAuthFor(lv),
 		PluginVersion: oauthPluginVersion,
@@ -1012,7 +1014,7 @@ func startLoginWithVariant(request []byte, lv string) ([]byte, error) {
 	})
 
 	// Supersede any previous pending login (single pending-login slot per
-	// flow map):
+	// flow map — mirrors cockpit-tools' single PENDING_OAUTH_STATE slot):
 	// close the old callback listener so retries never accumulate listeners
 	// for the 15-minute login TTL. A superseded tab's poll hits the tested
 	// "unknown state — please restart login" path.
@@ -1038,6 +1040,10 @@ func startLoginWithVariant(request []byte, lv string) ([]byte, error) {
 		codeChallenge: codeChallenge,
 		deviceID:      deviceID,
 		machineID:     machineID,
+		// v0.12.76: 登录起点解析出的设备密钥对（稳定身份的一部分），
+		// 交换点复用并随凭证落盘。
+		devicePublicKey:  ident.DevicePublicKey,
+		devicePrivateKey: ident.DevicePrivateKey,
 	})
 
 	// Step 7: accept loop only for the local-listener flow; resource
@@ -1057,9 +1063,13 @@ func startLoginWithVariant(request []byte, lv string) ([]byte, error) {
 		CodeChallenge: codeChallenge,
 		DeviceID:      deviceID,
 		MachineID:     machineID,
-		AuthDir:       host.AuthDir,
-		CreatedAt:     time.Now().Unix(),
-		ExpiresAt:     time.Now().Add(loginTTL).Unix(),
+		// v0.12.76: 稳定设备身份的密钥对随 pending 记录落盘，进程重启
+		// 后的 self-complete 仍复用同一对（不再现铸）。
+		DevicePublicKey:  ident.DevicePublicKey,
+		DevicePrivateKey: ident.DevicePrivateKey,
+		AuthDir:          host.AuthDir,
+		CreatedAt:        time.Now().Unix(),
+		ExpiresAt:        time.Now().Add(loginTTL).Unix(),
 	})
 
 	if ln != nil {
@@ -1104,6 +1114,9 @@ type loginCtx struct {
 	codeChallenge string
 	deviceID      string
 	machineID     string
+	// v0.12.76: 登录起点解析出的设备密钥对（稳定身份的一部分），随凭证落盘。
+	devicePublicKey  string
+	devicePrivateKey string
 
 	// authDir: host-provided auth dir (auth.login.start) enabling the
 	// .oauth callback-file fallback for resource-callback flows.
@@ -1124,8 +1137,8 @@ type loginCtx struct {
 	refreshToken string
 	loginHost    string // for ExchangeToken (from callback or fallback)
 	userTag      string // callback userTag echo (v0.12.24, intl parity)
-	// cbUID/cbNickname: the callback's userInfo identity echo (v0.12.25).
-	// Stable per-account file
+	// cbUID/cbNickname: the callback's userInfo identity echo (v0.12.25,
+	// cockpit-tools TraeCallbackPayload.userInfo). Stable per-account file
 	// identity when the fresh GetUserInfo call fails — the per-login
 	// loginTraceID fallback this replaces minted trae-<uuid>.json duplicates
 	// for every re-submission of the same account.
@@ -1165,6 +1178,13 @@ func acceptCallback(state string) {
 			return
 		}
 		if handleCallbackConn(conn, lc) {
+			// v0.12.74：监听器路径与 resource 路由对齐——回调已解决流程
+			//（token/错误均已捕获）但宿主 poll 停止抽干时（对话框已关/
+			// 宿主 oauth 会话丢失/poll HTTP 超时），此前无人推进登录，
+			// pending+callback_received 卡满 15 分钟 TTL 且 janitor 回收
+			// 不记 outcome（issue #38 实录）。selfOnce 保证幂等，grace
+			// 语义与 resource 路由完全一致。
+			spawnSelfCompleteCN(lc)
 			closeListener(lc.listener)
 			return
 		}
@@ -1226,7 +1246,7 @@ func handleCallbackConn(conn netConn, lc *loginCtx) bool {
 		}
 	}
 
-	// userTag (v0.12.24): mirrors the intl flow's userTag echo.
+	// userTag (v0.12.24): mirrors cockpit-tools TraeCallbackPayload.user_tag.
 	// Kept for parity with the intl flow; CN accounts exchange against the
 	// fixed api.trae.cn origin regardless of the tag.
 	for _, k := range []string{"userTag", "user_tag", "UserTag"} {
@@ -1234,6 +1254,20 @@ func handleCallbackConn(conn netConn, lc *loginCtx) bool {
 			lc.userTag = v
 			break
 		}
+	}
+
+	// userInfo echo (v0.12.77 parity with the resource-callback route,
+	// which has carried this since v0.12.25): the account's real
+	// UID/ScreenName. Besides the file-identity fallback, this is the
+	// trigger for the per-account DERIVED device identity — the local
+	// listener path used to miss it entirely, so listener logins never
+	// switched onto the account's own device.
+	if id := parseCallbackIdentity(vals); id.UID != "" {
+		lc.cbUID = id.UID
+		if id.Nickname != "" {
+			lc.cbNickname = id.Nickname
+		}
+		applyDerivedIdentityCN(lc, id.UID)
 	}
 
 	// Refresh token (use directly — skip ExchangeToken auth-code path).
@@ -1342,22 +1376,19 @@ func handlePollLogin(request []byte) ([]byte, error) {
 	case <-lc.done:
 		// Callback received.
 	default:
-		// The host may have received the redirect at its own oauth-callback
-		// endpoint and written the code to <authDir>/.oauth-trae-<state>.oauth
-		// instead of letting our resource route (or our loopback listener) see
-		// it. This used to be gated on lc.listener == nil, but a live login
-		// always binds a listener, so the gate made the fallback unreachable:
-		// on a remote/Docker host the built-in "add account" flow then polled
-		// "pending" for the full 15-minute TTL and expired. Probing is cheap
-		// (one failed os.ReadFile per poll) and the file only exists when the
-		// host actually wrote it, so always try it.
-		if code, cbErr, ok := readHostCallbackFile(lc.authDir, state); ok {
-			if cbErr != "" {
-				lc.err = fmt.Errorf("oauth callback error: %s", cbErr)
-			} else if code != "" {
-				lc.authCode = code
+		if lc.listener == nil {
+			// Resource-callback flow: the browser redirect completed the
+			// flow on the CPA resource route; if the host intercepted the
+			// redirect at its own oauth-callback endpoint instead, pick
+			// the code up from the .oauth callback file it wrote.
+			if code, cbErr, ok := readHostCallbackFile(lc.authDir, state); ok {
+				if cbErr != "" {
+					lc.err = fmt.Errorf("oauth callback error: %s", cbErr)
+				} else if code != "" {
+					lc.authCode = code
+				}
+				completeLogin(lc)
 			}
-			completeLogin(lc)
 		}
 		select {
 		case <-lc.done:
@@ -1396,7 +1427,8 @@ func handlePollLogin(request []byte) ([]byte, error) {
 		lcDevicePublicKey  string
 		lcDevicePrivateKey string
 		// v0.12.44: raw ExchangeToken response — persisted as auth.exchangeResponse
-		// (region echoes, server-bound device, refresh-token expiry all live here).
+		// (credential parity with cockpit-tools trae_auth_raw.exchangeResponse:
+		// region echoes, server-bound device, refresh-token expiry all live here).
 		exchangeRaw []byte
 	)
 
@@ -1411,6 +1443,12 @@ func handlePollLogin(request []byte) ([]byte, error) {
 			Domain:       "trae.cn",
 			MachineID:    lc.machineID,
 			DeviceID:     lc.deviceID,
+			// v0.12.77: carry the login's device key pair (per-account
+			// derived when the callback echoed the uid) so the bound
+			// renewal signs as that device instead of falling to the
+			// legacy unbound path.
+			DevicePublicKey:  lc.devicePublicKey,
+			DevicePrivateKey: lc.devicePrivateKey,
 			// v0.12.60: refreshLocked 以谱系选 OAuth ClientID
 			// （solo → en1oxy7wnw8j9n）。裸 Auth 缺 variant 时一律解析成
 			// cn client，SOLO 登录当场就换发出跨类 token——ug/pay 族
@@ -1431,15 +1469,18 @@ func handlePollLogin(request []byte) ([]byte, error) {
 	case lc.authCode != "":
 		// Auth-code path: call ExchangeToken with AuthCode body.
 		// v0.12.24: the candidates now lead with the CN account-API
-		// origins (api.trae.cn → api.trae.com.cn), with the loginHost
-		// derivation
+		// origins (api.trae.cn → api.trae.com.cn — cockpit-tools
+		// candidate_account_api_origins), with the loginHost derivation
 		// (www.trae.cn HTML host etc.) demoted to a last-resort
-		// fallback. DeviceInfo
+		// fallback. DeviceInfo mirrors build_official_device_info and
 		// now carries a fresh per-login EC P-256 DevicePublicKey (an
 		// empty value surfaces as HTTP 401 / business code 20405 — the
 		// official client uploads a bound public key on first exchange).
+		// v0.12.76: the pair now comes from the stable login identity
+		// (carried from start-login / restored from the pending record)
+		// instead of a fresh mint per exchange.
 		loginHost := lc.loginHost
-		pubKeyPEM, privKeyPEM, keyErr := generateDeviceKeyPair()
+		pubKeyPEM, privKeyPEM, keyErr := deviceKeysForLogin(lc.devicePublicKey, lc.devicePrivateKey, lc.authDir, lc.variant)
 		if keyErr != nil {
 			return fail(fmt.Sprintf("device key pair: %v", keyErr))
 		}
@@ -1463,7 +1504,7 @@ func handlePollLogin(request []byte) ([]byte, error) {
 		lcDevicePrivateKey = privKeyPEM
 		lcDevicePublicKey = pubKeyPEM
 		exchangeRaw = tokenRaw
-		// Parse token response (multiple field names supported).
+		// Parse token response (multiple field names supported per cockpit-tools).
 		accessToken, refreshToken, expiresAt = parseExchangeTokenResponse(tokenRaw)
 		if accessToken == "" && refreshToken == "" {
 			return fail(fmt.Sprintf("ExchangeToken: no token in response (body=%s)",
@@ -1492,8 +1533,8 @@ func handlePollLogin(request []byte) ([]byte, error) {
 	// auth file carried variant:"" and a solo login was re-claimed as cn
 	// (wrong ClientID / endpoints / models on every later dispatch).
 	a.Variant = lc.variant
-	// v0.12.44: GetUserInfoFull keeps the raw profile response
-	// (avatar/region/tenant/mobile live in Result).
+	// v0.12.44: GetUserInfoFull keeps the raw profile response (cockpit-tools
+	// trae_profile_raw parity: avatar/region/tenant/mobile live in Result).
 	uid, nickname, entID, userInfoRaw, err := upstreamClient.GetUserInfoFull(a)
 	if err != nil {
 		log.Printf("GetUserInfo failed: %v — proceeding with callback/unknown identity", err)
@@ -1509,7 +1550,7 @@ func handlePollLogin(request []byte) ([]byte, error) {
 
 	// Persist the auth file (nested form: {type, provider, auth:{...}, account:{...}}).
 	// CRITICAL: include type+provider so CPA can route this auth to the correct plugin.
-	// v0.12.44: auth/account carry the parity extras (platformId,
+	// v0.12.44: auth/account carry the cockpit-tools-parity extras (platformId,
 	// authClientId, exchangeResponse, profileRaw, region echoes, bound device,
 	// refresh expiry) via credentialParityFields — see credentialParityFields.
 	authFields := map[string]any{
@@ -1573,7 +1614,7 @@ func handlePollLogin(request []byte) ([]byte, error) {
 }
 
 // -----------------------------------------------------------------------------
-// OAuth helpers
+// OAuth helpers (cockpit-tools aligned)
 // -----------------------------------------------------------------------------
 
 // verificationURIParams carries the parameters for buildVerificationURI.
@@ -1582,7 +1623,7 @@ type verificationURIParams struct {
 	PluginVersion string // e.g. "1.0.0"
 	ClientID      string // SOLO: en1oxy7wnw8j9n; non-SOLO: ono9krqynydwx5
 	LoginTraceID  string
-	CallbackURL   string // auth_callback_url (NOT URL-encoded)
+	CallbackURL   string // auth_callback_url (NOT URL-encoded per cockpit-tools)
 	MachineID     string
 	DeviceID      string
 	DeviceBrand   string // e.g. "83DG"
@@ -1596,8 +1637,9 @@ type verificationURIParams struct {
 }
 
 // buildVerificationURI builds the user-facing OAuth login URL.
+// Mirrors cockpit-tools build_verification_uri (trae_oauth.rs:1851-1945).
 // Layout: {loginHost}/authorization?{query}
-// Query parameter order is significant (preserved order).
+// Query parameter order is significant (cockpit-tools uses Vec<(K,V)> preserved order).
 func buildVerificationURI(loginHost string, p verificationURIParams) string {
 	type kv struct {
 		k, v   string
@@ -1612,7 +1654,7 @@ func buildVerificationURI(loginHost string, p verificationURIParams) string {
 		{"client_id", p.ClientID, false},
 		{"redirect", "0", false},
 		{"login_trace_id", p.LoginTraceID, true},
-		{"auth_callback_url", p.CallbackURL, false}, // NOT encoded
+		{"auth_callback_url", p.CallbackURL, false}, // NOT encoded per cockpit-tools
 		{"machine_id", p.MachineID, true},
 		{"device_id", p.DeviceID, true},
 		{"x_device_id", p.DeviceID, true},
@@ -1641,6 +1683,7 @@ func buildVerificationURI(loginHost string, p verificationURIParams) string {
 }
 
 // deviceInfo is the DeviceInfo struct sent in the ExchangeToken request body.
+// Mirrors cockpit-tools build_official_device_info (trae_oauth.rs:2087-2118).
 type deviceInfo struct {
 	DeviceID        string `json:"DeviceID"`
 	MachineID       string `json:"MachineID"`
@@ -1659,7 +1702,7 @@ type deviceInfo struct {
 // buildOfficialDeviceInfo builds the DeviceInfo for ExchangeToken.
 // v0.12.24: DevicePublicKey now carries a fresh per-login EC P-256 SPKI PEM
 // (generateDeviceKeyPair) — the official client uploads a bound public key on
-// first exchange; an
+// first exchange (cockpit-tools v0.26.1, codex-app-transfer flow.rs); an
 // empty value surfaces as HTTP 401 / business code 20405. DeviceBrand maps
 // the OS to the vendor brand (deviceBrandForContext) while DeviceModel keeps
 // the raw x_device_brand, exactly like the upstream client.
@@ -1680,8 +1723,8 @@ func buildOfficialDeviceInfo(deviceID, machineID, platformCode, deviceName, devi
 	}
 }
 
-// extractLoginHost checks
-// multiple JSON paths (Result.LoginHost / Result.loginHost / Result.LoginURL /
+// extractLoginHost mirrors cockpit-tools extract_login_guidance_host:
+// checks multiple JSON paths (Result.LoginHost / Result.loginHost / Result.LoginURL /
 // result.* / data.Result.* / data.* / top-level) and returns the first non-empty value.
 func extractLoginHost(raw []byte) string {
 	var top map[string]any
@@ -1736,7 +1779,7 @@ func jsonString(v any) string {
 	return ""
 }
 
-// extractAuthCodeFromAuthCodeInfo extracts the auth code.
+// extractAuthCodeFromAuthCodeInfo mirrors cockpit-tools extract_auth_code_from_auth_code_info.
 // The input may be JSON-encoded or URL-encoded JSON. Checks multiple keys:
 // authCode / auth_code / AuthCode / authorization_code / code.
 func extractAuthCodeFromAuthCodeInfo(raw string) string {
@@ -1766,8 +1809,8 @@ func extractAuthCodeFromAuthCodeInfo(raw string) string {
 }
 
 // parseExchangeTokenResponse extracts access/refresh tokens + expiresAt from an
-// ExchangeToken response. Checks
-// Result.{AccessToken,accessToken,Token,token} and
+// ExchangeToken response. Mirrors cockpit-tools apply_exchange_token_response
+// which checks Result.{AccessToken,accessToken,Token,token} and
 // Result.{RefreshToken,refreshToken} (multiple field names supported).
 func parseExchangeTokenResponse(raw []byte) (accessToken, refreshToken string, expiresAt int64) {
 	var env struct {
@@ -1820,18 +1863,18 @@ func toInt64(v any) (int64, bool) {
 	return 0, false
 }
 
-// credentialParityFields v0.12.44 — 凭证信息量对齐（用户报告
-// "我们生成的凭证信息不够全"）。trae_auth_raw 里
+// credentialParityFields v0.12.44 — cockpit-tools 凭证信息量对齐（用户报告
+// "我们生成的凭证不如 cockpit-tools 的信息全"）。cockpit 的 trae_auth_raw 里
 // 有一整层我们此前不落盘的字段（exchangeResponse 原始回包、region 回显、
 // 服务端绑定设备、refresh token 过期时刻、platformId 四谱系标识、富 profile）。
 //
 // 数据源与优先级：ExchangeToken 原始回包（exchangeRaw，顶层 AIRegion/authClientId/
 // host/loginHost/loginRegion/storeRegion + Result{BoundDeviceID, DeviceBindStatus,
-// RefreshExpireAt, ClientID}，形状与 trae_auth_raw.exchangeResponse
+// RefreshExpireAt, ClientID}，形状与 cockpit 导出的 trae_auth_raw.exchangeResponse
 // 一致）> GetUserInfo 原始回包（profileRaw.Result：Region/AIRegion/AvatarUrl/
 // TenantID/NonPlainTextMobile/RegisterTime）> variant 推导默认值。
 //
-// 默认值只取硬编码常量：
+// 默认值只取 cockpit 硬编码常量（trae_account_core_platform_storage.rs:196-199）：
 // CN 谱系 authDomain=www.trae.cn、loginRegion=cn、storeRegion=CN、aiRegion=CN；
 // intl/solo-intl 谱系 authDomain=www.trae.ai，region 类字段不做猜测（仅回显有值才落盘）。
 // 纯函数、可测试；永不返回错误（回包解析失败 = 只落 variant 可推导的字段）。
@@ -1843,9 +1886,9 @@ func credentialParityFields(variant, loginHost string, exchangeRaw, profileRaw [
 	authExtras["platformId"] = upstream.PlatformIDFor(variant)
 	authExtras["platformName"] = upstream.PlatformNameFor(variant)
 
-	// 2) region/host 默认值（仅 CN 谱系有常量背书；intl 的
+	// 2) region/host 默认值（仅 CN 谱系有 cockpit 常量背书；intl 的
 	// authDomain 不默认 —— 本插件 intl realm 历史上走 marscode.com，
-	// 与 TRAE_AUTH_DOMAIN=www.trae.ai 的现行值不一致，不猜测）。
+	// 与 cockpit TRAE_AUTH_DOMAIN=www.trae.ai 的现行值不一致，不猜测）。
 	if !upstream.IsIntlVariant(variant) {
 		authExtras["authDomain"] = "www.trae.cn"
 		authExtras["loginRegion"] = "cn"
@@ -1873,7 +1916,7 @@ func credentialParityFields(variant, loginHost string, exchangeRaw, profileRaw [
 		Result      echoResult `json:"Result"`
 	}
 	if len(exchangeRaw) > 0 && json.Unmarshal(exchangeRaw, &echo) == nil {
-		// 原始回包整体落盘（同名字段 exchangeResponse，字节级保留）。
+		// 原始回包整体落盘（cockpit 同名字段 exchangeResponse，字节级保留）。
 		authExtras["exchangeResponse"] = json.RawMessage(exchangeRaw)
 		setIf := func(key, val string) {
 			if s := strings.TrimSpace(val); s != "" {
@@ -1902,7 +1945,7 @@ func credentialParityFields(variant, loginHost string, exchangeRaw, profileRaw [
 		authExtras["authClientId"] = upstream.ClientIDFor(variant)
 	}
 
-	// 4) 富 profile（GetUserInfo Result → account 侧字段，trae_profile_raw）。
+	// 4) 富 profile（GetUserInfo Result → account 侧字段，cockpit trae_profile_raw）。
 	var prof struct {
 		Result struct {
 			Region             string `json:"Region"`
@@ -1928,7 +1971,7 @@ func credentialParityFields(variant, loginHost string, exchangeRaw, profileRaw [
 		setIfA("registerTime", prof.Result.RegisterTime)
 	}
 
-	// 5) userRegion（形状 {"_aiRegion":..,"region":..}）：profile > 回包 > CN 默认。
+	// 5) userRegion（cockpit 形状 {"_aiRegion":..,"region":..}）：profile > 回包 > CN 默认。
 	region := ""
 	aiRegion := ""
 	if profileOK {
@@ -2488,8 +2531,8 @@ func applyCooldownOn(p *pool.Pool, uid string, kind upstream.ErrKind) {
 	case upstream.ErrInputTooLarge:
 		// 请求级失败，不惩罚账号
 	// v0.12.79 (issue #9): 4001 模型/通道不匹配同样是请求级失败——换任何
-	// 账号结果相同；反复选到死模型不得把健康账号累计冷却
-	// （模型类 4001 不冷却、不计 failed）。
+	// 账号结果相同；反复选到死模型不得把健康账号累计冷却（对齐
+	// trae2api-more/TraeWorkAssistant：模型类 4001 不冷却、不计 failed）。
 	case upstream.ErrModelUnavailable:
 		// 请求级失败，不惩罚账号
 	}
@@ -2590,7 +2633,7 @@ func normalizeExpiresAt(v int64) int64 {
 }
 
 // newDeviceID / newMachineID generate device identifiers for OAuth flows in
-// the shape the upstream actually validates:
+// the shape the upstream actually validates (cockpit-tools aligned):
 //   - device_id: numeric string, 8-24 digits (normalize_device_id →
 //     is_numeric_id(8, 24); real IDE ids are 16-19 digit snowflakes). The
 //     previous randomHex(16) — 32 hex chars with letters — failed that

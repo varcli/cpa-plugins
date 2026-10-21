@@ -12,7 +12,7 @@ import (
 )
 
 // toolDescriptionByteLimit is the threshold above which all tool descriptions
-// are stripped to avoid Tencent's 64KB body-size filter.
+// are stripped to avoid Tencent's 64KB body-size filter. Mirrors OmniRoute.
 const toolDescriptionByteLimit = 65536
 
 // forceStreamBody returns the request body with "stream":true set, since the
@@ -42,7 +42,7 @@ func prepareUpstreamBody(payload, original []byte, sa *storedAuth, upstreamModel
 	normalizeToolsInPlace(obj)
 
 	// 2.5 normalizeHistory: OpenAI developer 角色 → system（腾讯后端不认
-	// developer，实测判 11128 渠道风控，2026-09 生产实证）；
+	// developer，实测判 11128 渠道风控——Coding2API 2026-09 生产实证）；
 	// 脏 tool_call（无 function/name）剔除，清空后无内容的 assistant 占位
 	// 与悬空 role=tool 结果成对清理（大输入/长会话韧性，同源实证对策）。
 	normalizeHistoryInPlace(obj)
@@ -65,7 +65,7 @@ func prepareUpstreamBody(payload, original []byte, sa *storedAuth, upstreamModel
 	// 6. maxTokenRename: OpenAI-newer clients send max_completion_tokens;
 	// the CodeBuddy upstream speaks max_tokens. Copy the value across when
 	// max_tokens is absent, then drop the foreign key so the gateway does
-	// not see an unknown parameter.
+	// not see an unknown parameter (wb2api payload.go, PR #116 semantics).
 	if v, ok := obj["max_completion_tokens"]; ok {
 		if _, has := obj["max_tokens"]; !has && v != nil {
 			obj["max_tokens"] = v
@@ -85,11 +85,12 @@ func prepareUpstreamBody(payload, original []byte, sa *storedAuth, upstreamModel
 //   - role "developer" → "system": the Tencent backend does not recognize
 //     the OpenAI developer role and rejects the whole request as channel
 //     risk-control 11128 (reasoning-model clients like PI convert system
-//     messages to developer; 2026-09 production evidence).
+//     messages to developer; Coding2API production evidence 2026-09).
 //   - dirty tool_calls (missing function or empty name) are dropped; an
 //     assistant placeholder left with no content after the cleanup is
 //     dropped entirely; dangling role=tool results whose tool_call_id
-//     points at a dropped call are dropped with it. Oversized agent
+//     points at a dropped call are dropped with it (same shape as the
+//     Coding2API _clean_history_tool_calls defense). Oversized agent
 //     histories trimmed by the client mid-conversation are the main
 //     source of such orphans.
 func normalizeHistoryInPlace(obj map[string]any) bool {
@@ -236,7 +237,7 @@ func normalizeToolsInPlace(obj map[string]any) bool {
 //     (length/agentPattern triggers) is retired — see
 //     rewriteSystemContentField for the evidence chain.
 //  2. Strip reasoning_effort "none"/"off" (Tencent rejects them); mirror
-//     other values to reasoning_summary="auto".
+//     other values to reasoning_summary="auto" (OmniRoute codebuddy-cn.ts).
 //  3. forceMaxThinking for hy3/hy4-family models.
 func rewriteSystemInPlace(obj map[string]any) bool {
 	changed := rewriteSystemMessagesInPlace(obj)
@@ -261,9 +262,9 @@ func rewriteSystemInPlace(obj map[string]any) bool {
 // messages. Field reports mapping to exactly this: tool output that "looks
 // truncated / stdout empty", conversations that "reset every so often", and
 // the model answering
-// with the neutral prompt itself on interruption. The replacement is gated
-// on `message.role !== "system" -> return message` verbatim; this restores
-// it.
+// with the neutral prompt itself on interruption. OmniRoute codebuddy-cn.ts
+// (the porting source) gates the replacement on
+// `message.role !== "system" -> return message` verbatim; this restores it.
 func rewriteSystemMessagesInPlace(obj map[string]any) bool {
 	messages, _ := obj["messages"].([]any)
 	changed := false
@@ -283,13 +284,13 @@ func rewriteSystemMessagesInPlace(obj map[string]any) bool {
 }
 
 // rewriteSystemContentField applies the filter defenses to one SYSTEM
-// message's content. v0.9.28 (issue #3 closure):
+// message's content. v0.9.28 (issue #3 closure, adopting PR #4's position):
 // the wholesale neutralPrompt replacement — for content over
 // maxSystemPromptBytes or matching agentPattern — is RETIRED. Evidence that
 // it defended nothing: (a) the upstream filter blocklists VERBATIM phrases
 // (sanitizeBlockedTemplates' one-word insert "tool" defeats it — a verbatim
 // matcher does not reject by length or by broad agent-identity patterns);
-// (b) removing both triggers still ran without 400s; (c) since
+// (b) PR #4's author removed both triggers and ran without 400s; (c) since
 // the v0.9.18 role gate, non-system messages of any length or content pass
 // unfiltered and no rejection was ever reported. What the wholesale swap DID
 // do was gut every agent host's system prompt (nearly all match "you are
@@ -326,7 +327,8 @@ func rewriteSystemContentField(msg map[string]any) bool {
 	return false
 }
 
-// mirrorReasoningEffort implements reasoning_effort handling:
+// mirrorReasoningEffort implements OmniRoute codebuddy-cn.ts reasoning_effort
+// handling:
 //   - "none"/"off" → delete field (Tencent has no "none")
 //   - other value → set reasoning_summary="auto" (mirror)
 //   - absent → no-op (forcing reasoning triggers content filter)
@@ -349,7 +351,7 @@ func mirrorReasoningEffort(obj map[string]any) bool {
 
 // compactToolDescriptions strips tool.function.description when the serialized
 // tools array exceeds toolDescriptionByteLimit (64KB). Tencent's body-size
-// filter rejects large tool descriptions.
+// filter rejects large tool descriptions. Mirrors OmniRoute codebuddy-cn.ts.
 func compactToolDescriptions(obj map[string]any) bool {
 	tools, ok := obj["tools"].([]any)
 	if !ok || len(tools) == 0 {
@@ -381,8 +383,8 @@ func compactToolDescriptions(obj map[string]any) bool {
 }
 
 // injectReasoningInPlace folds each historical assistant turn's reasoning
-// back into its content as a <thought> block (issue #5). The upstream
-// gateway silently drops the non-standard
+// back into its content as a <thought> block (issue #5, implementation
+// adapted from PR #6). The upstream gateway silently drops the non-standard
 // reasoning_content field on multi-turn history, so the model never sees its
 // own prior chain of thought — "I derived X last turn" self-attention is
 // gone and the model re-derives or contradicts itself. Inlining the reasoning
@@ -470,14 +472,15 @@ func prependThoughtInPlace(msg map[string]any, thoughtBlock string) bool {
 //
 // v0.9.37 (issue #20): the Global realm validates messages[0] — a payload
 // whose FIRST message is not a system prompt is rejected (code 11128,
-// "first message is not system prompt"). The old any-position
+// "first message is not system prompt"; contract mirrored from
+// zqcccc/workbuddy-cliproxy's ensureSystemFirst). The old any-position
 // scan skipped the injection whenever a client carried a system message
 // mid-history (normalizeHistory's developer→system rewrite preserves
 // position), leaving a user first message for upstream to reject. A
 // system message that is not first no longer suppresses the injection;
 // the Global-only gate is unchanged so CN traffic stays byte-identical.
 func ensureSystemMessageInPlace(obj map[string]any, sa *storedAuth) bool {
-	if sa == nil || !isGlobalDomain(sa.Auth.Domain) {
+	if sa == nil || !(isGlobalDomain(sa.Auth.Domain) || isIntlDomain(sa.Auth.Domain)) {
 		return false
 	}
 	messages, ok := obj["messages"].([]any)
@@ -656,8 +659,8 @@ func rewriteSystemForUpstream(payload []byte) []byte {
 // user-only requests with code 11101 "Parse message failed: 11101:invalid
 // request", and per issue #20 field evidence any payload whose first
 // message is not system with 11128 — the upstream check is on position,
-// not on the presence of a system message somewhere in the list. CN
-// (copilot.tencent.com)
+// not on the presence of a system message somewhere in the list (mirrors
+// zqcccc/workbuddy-cliproxy's ensureSystemFirst). CN (copilot.tencent.com)
 // does not require a system message but tolerates one. Inserting a
 // harmless system message unifies both paths.
 func ensureSystemMessage(payload []byte, sa *storedAuth) []byte {
@@ -665,7 +668,7 @@ func ensureSystemMessage(payload []byte, sa *storedAuth) []byte {
 		return payload
 	}
 	// Only inject for Global; CN doesn't need it and we minimize diff.
-	if sa == nil || !isGlobalDomain(sa.Auth.Domain) {
+	if sa == nil || !(isGlobalDomain(sa.Auth.Domain) || isIntlDomain(sa.Auth.Domain)) {
 		return payload
 	}
 	var obj map[string]any
@@ -703,8 +706,8 @@ func ensureSystemMessage(payload []byte, sa *storedAuth) []byte {
 // Blocked-template variants seen in the wild beyond the two verbatim
 // templates above: capitalization drift, straight/curly quote drift, and
 // "Anthropic's official CLI" phrasing without the "You are Claude Code"
-// prefix. The exact-match ReplaceAll calls above stay
-// byte-identical; these regexes are the safety net.
+// prefix (adapted from PR #4). The exact-match ReplaceAll calls above stay
+// byte-identical to OmniRoute; these regexes are the safety net.
 var (
 	reClaudeCodeCli = regexp.MustCompile(`(?i)anthropic(?:'s)?\s+official\s+cli\s+for\s+claude`)
 	reMainBranchPr  = regexp.MustCompile(`(?i)main\s+branch\s+\(you\s+will\s+usually\s+use\s+this\s+for\s+prs\)`)
@@ -729,6 +732,18 @@ var (
 	// Covers capitalization drift and the bare (no "You are CodeBuddy
 	// Code" prefix) form seen mid-sentence in agent system prompts.
 	reCodeBuddyCli = regexp.MustCompile(`(?i)tencent(?:'s)?\s+official\s+cli\s+for\s+codebuddy`)
+
+	// reDeepSeekHarnessIntro matches the DeepSeek Harness base-instructions
+	// opening signature, the third member of the same 11-128 family as the
+	// Claude Code and Codex CLI templates above. Single-variable replay
+	// against copilot.tencent.com: the bare sentence "You are an AI agent
+	// powered by DeepSeek Harness" returns 400 code 11-128 every time, while
+	// "DeepSeek Harness" alone, "powered by DeepSeek Harness", "You are an
+	// AI agent powered by DeepSeek." and the same sentence naming a different
+	// harness all return 200. Swapping only this sentence in a 175 KB
+	// request (47 messages, 66 tools, reasoning_effort=max) flips 400 -> 200.
+	reDeepSeekHarnessIntro          = regexp.MustCompile(`(?i)you are an ai agent powered by deepseek harness`)
+	deepSeekHarnessIntroReplacement = "You are an AI assistant"
 )
 
 func sanitizeBlockedTemplates(s string) string {
@@ -740,12 +755,6 @@ func sanitizeBlockedTemplates(s string) string {
 		"Default branch (you will usually use this for PRs)")
 	s = reClaudeCodeCli.ReplaceAllString(s, "Anthropic's official CLI tool for Claude")
 	s = reMainBranchPr.ReplaceAllString(s, "Default branch (you will usually use this for PRs)")
-	// Tencent CodeBuddy identity line: exact match first (the verbatim
-	// trigger), then the tolerant regex for capitalization / prefix drift.
-	s = strings.ReplaceAll(s,
-		"You are CodeBuddy Code, Tencent's official CLI for CodeBuddy.",
-		"You are CodeBuddy Code, Tencent's official CLI tool for CodeBuddy.")
-	s = reCodeBuddyCli.ReplaceAllString(s, "Tencent's official CLI tool for CodeBuddy")
 	// v0.9.54 (issue #31): Codex CLI intro signature — Tencent gateway
 	// channel risk-control (11128). Exact match first (the verified
 	// trigger), then the tolerant regex for case / phrasing drift between
@@ -755,6 +764,16 @@ func sanitizeBlockedTemplates(s string) string {
 		"You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI.",
 		codexCliIntroReplacement)
 	s = reCodexCliIntro.ReplaceAllString(s, codexCliIntroReplacement)
+	// v0.9.62: DeepSeek Harness intro signature — same Tencent 11-128
+	// channel gate. System-role gating happens upstream in
+	// rewriteSystemMessagesInPlace — user content stays untouched.
+	s = reDeepSeekHarnessIntro.ReplaceAllString(s, deepSeekHarnessIntroReplacement)
+	// Tencent CodeBuddy identity line: exact match first (the verbatim
+	// trigger), then the tolerant regex for capitalization / prefix drift.
+	s = strings.ReplaceAll(s,
+		"You are CodeBuddy Code, Tencent's official CLI for CodeBuddy.",
+		"You are CodeBuddy Code, Tencent's official CLI tool for CodeBuddy.")
+	s = reCodeBuddyCli.ReplaceAllString(s, "Tencent's official CLI tool for CodeBuddy")
 	return s
 }
 
@@ -770,7 +789,7 @@ func forceMaxThinking(obj map[string]any) bool {
 	if !strings.HasPrefix(lm, "hy3") && !strings.HasPrefix(lm, "hy4") {
 		return false
 	}
-	// v0.9.29: the current Hy3 catalog
+	// v0.9.29 (fork libo0118/qoder-custom review): the current Hy3 catalog
 	// explicitly advertises a "low" effort level, so an explicit low is kept
 	// instead of being forced up — the historical high-pin only remains as the
 	// fallback for values the model can't honor.
