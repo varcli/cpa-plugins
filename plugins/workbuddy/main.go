@@ -80,8 +80,11 @@ const (
 	// Intl chat/auth gateway (merged codebuddy-intl plugin, v0.11.0):
 	// the codebuddy.ai realm issues its own JWTs — separate from both
 	// copilot.tencent.com and workbuddy.ai.
-	upstreamBaseIntl    = "https://www.codebuddy.ai"
-	clientUA            = "CLI/2.108.1 CodeBuddy/2.108.1"
+	upstreamBaseIntl = "https://www.codebuddy.ai"
+	// v0.9.69 (issue #56): official CLI package observed at 2.168.2 on
+	// 2026-10-18 (workbuddy2api-hub captures) — the CLI identity UA rides
+	// the current value instead of sitting three minors behind.
+	clientUA            = "CLI/2.168.2 CodeBuddy/2.168.2"
 	originReferer       = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
 	originRefererIntl   = "https://www.codebuddy.ai"
@@ -375,6 +378,10 @@ func wbRegistration() registration {
 				{Name: "models_intl", Type: pluginapi.ConfigFieldTypeString, Description: "Leave empty (recommended): each Intl account then supports exactly what codebuddy.ai returns for its credential token (5-min cache) - no pre-filled guessing, so unsupported models are never advertised or routed. Optional comma-separated upstream model IDs to pin/override the Intl model output."},
 				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "Multi-account selection: off (defer to built-in, default) or credits (pick highest remaining). WARNING: when off + lifecycle_auto=false, exhausted accounts may still be routed — enable lifecycle_auto or set scheduler_mode=credits."},
 				{Name: "stream_head_timeout", Type: pluginapi.ConfigFieldTypeInteger, Description: "Opt-in async-stream head gate, in seconds (default 0 = disabled, unchanged behavior). When > 0 the executor waits up to this long for the first decisive upstream event before opening the host stream, so a pre-answer failure (upstream >=400 or an error frame before the model starts answering) returns as a normal failed request with an HTTP status instead of a lossy in-band text error. Never blocks longer than this, and a silent stream is released normally."},
+				{Name: "account_max_concurrent", Type: pluginapi.ConfigFieldTypeInteger, Description: "Opt-in per-credential in-flight chat cap (default 0 = disabled, unchanged dispatch). N > 0: once N executor calls for one credential are still in flight, further requests fail fast with a plain error so the host rotates to another candidate — no local queueing. The upstream meters per (account, minute) and one big-context conversation alone carries hundreds of thousands of tokens, so parallel conversations on one credential are the fastest path to a model-scoped rate limit."},
+				{Name: "reserve_credits", Type: pluginapi.ConfigFieldTypeInteger, Description: "Opt-in credit guardrail (#61): skip a credential in scheduler pick once its cached remaining credits are <= the reserve, keeping the account usable for the official client. Default 0 = off. Reads the existing credits cache only (zero upstream calls). Only effective with scheduler_mode: credits; per-credential override: reserve_credits number in the auth document top level (0 = disable for that credential)."},
+				{Name: "daily_credits_cap", Type: pluginapi.ConfigFieldTypeInteger, Description: "Opt-in credit guardrail (#61): skip a credential once its same-day credit spend (day-start remaining − current remaining, from the credits cache) reaches the cap. Day boundary is UTC+8; counters are in-memory. Default 0 = off. Only effective with scheduler_mode: credits; per-credential override: daily_credits_cap in the auth document top level."},
+				{Name: "identity_switch_on_429", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Opt-in (#59): on an account-level 429 in the CN realm, flip this credential between the CLI and IDE identity families (persisted, capped at 4 switches per UTC+8 day) so a small pool can drain both quota lanes. Default false."},
 				{Name: "model_prefix", Type: pluginapi.ConfigFieldTypeString, Description: "Prefix applied to every registered model id (default workbuddy/). Keeps workbuddy's models in their own group on the CPA models page and prevents id collisions with another plugin or a native provider. A missing trailing slash is added."},
 				{Name: "enable_model_prefix", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Whether to add model_prefix to registered model ids (default true). Turn it off to advertise the bare upstream ids; the executor then forwards bare ids too."},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional override of CPAMP usage import URL (default http://cpa-manager-plus:18317/v0/management/usage/import; also env USAGE_REPORT_URL)."},
@@ -460,6 +467,22 @@ var modelAliasCache struct {
 type storedAuth struct {
 	Auth    storedTokens  `json:"auth"`
 	Account storedAccount `json:"account"`
+
+	// Per-credential guardrail overrides (#61), read at scheduler-pick time
+	// via the account cache: absent = inherit the global knob, 0 = disable
+	// that guardrail for this credential. Panel/doc editing sets them as
+	// document top-level numbers; pointer shape keeps nil vs explicit 0
+	// distinct, and omitempty preserves panel-set values across token
+	// refreshes (persistAuthTokens' merge keeps keys sa does not carry).
+	ReserveCredits  *int64 `json:"reserve_credits,omitempty"`
+	DailyCreditsCap *int64 `json:"daily_credits_cap,omitempty"`
+
+	// authIndex is the host-side identity of this credential, stamped by
+	// hostAuthGet / hostAuthGetBundle (empty for hand-built snapshots: tests,
+	// pre-persist login flows). The billing plane's 401 self-heal (0.9.68)
+	// uses it to renew and persist the token in place. Unexported on purpose:
+	// encoding/json skips it, so the persisted document shape is unchanged.
+	authIndex string
 }
 
 type storedTokens struct {
@@ -471,6 +494,12 @@ type storedTokens struct {
 	// (workbuddy login) or "ide" (CodeBuddy IDE login). Empty means legacy
 	// CLI-style (no X-IDE-* headers), matching historical workbuddy files.
 	LoginPlatform string `json:"loginPlatform,omitempty"`
+	// IdentityFamily is the sticky outbound-family state for the CHAT plane
+	// (#59): "cli" or "ide" — the quota lane the credential currently
+	// speaks, flipped only by the opt-in 429 lane switch and persisted through
+	// every persistAuthTokens merge (a restart must not forget which lane is
+	// hot). Empty = inherit the login family; a fresh login resets it.
+	IdentityFamily string `json:"identity_family,omitempty"`
 	// Region records which realm produced the token: "cn" (copilot.tencent.com),
 	// "intl" (codebuddy.ai IDE client) or "global" (workbuddy.ai panel import).
 	// Empty = legacy file — accountRegion falls back to domain sniffing.
@@ -591,10 +620,26 @@ func upstreamBaseFor(sa *storedAuth) string {
 }
 
 func endpointChatFor(sa *storedAuth) string {
+	if chatEndpointOverride != "" {
+		return chatEndpointOverride + "/v2/chat/completions"
+	}
 	return upstreamBaseFor(sa) + "/v2/chat/completions"
 }
 
+// refreshEndpointOverride（0.9.68 测试缝）：非空时把 /token/refresh 端点重定向
+// 到该 base（与 loginEndpointsOverride 同型）。生产恒为空；billing 401 自愈
+// 的 hermetic 测试用它驱动完整的 401→续期→重发链路。
+var refreshEndpointOverride string
+
+// chatEndpointOverride（0.9.74 测试缝）：非空时把 chat 端点重定向到该
+// base（与 refreshEndpointOverride 同型）。生产恒为空；chat 平面 401 自愈
+// 的 hermetic 测试用它驱动完整的 401→续期→重发链路。
+var chatEndpointOverride string
+
 func endpointTokenRefreshFor(sa *storedAuth) string {
+	if refreshEndpointOverride != "" {
+		return refreshEndpointOverride + "/v2/plugin/auth/token/refresh"
+	}
 	return upstreamBaseFor(sa) + "/v2/plugin/auth/token/refresh"
 }
 
@@ -606,7 +651,14 @@ func endpointModelsFor(sa *storedAuth) string {
 // Empty fields are signalled via the X-No-* convention used by CodeBuddy.
 func backendHeaders(req *http.Request, sa *storedAuth) {
 	commonHeaders(req)
-	applyPlatformHeaders(req, platformForAuth(sa))
+	// #59: the chat plane follows the sticky outbound family (identity_family),
+	// not the raw login platform — both the X-IDE family selection and the
+	// Stainless gate below key on familyPlatformFor, so a lane switch is a
+	// whole-family change: CLI Stainless set out, CodeBuddyIDE set in (or
+	// back), atomically, never mixed. Login/refresh/billing planes keep the
+	// login-family shape; Intl's applyRealmHeaders still runs after this and
+	// still owns the Intl family (switching is CN-realm only anyway).
+	applyPlatformHeaders(req, familyPlatformFor(sa))
 	applyRealmHeaders(req, sa)
 	// v0.9.29 (fork libo0118/qoder-custom review): the official WorkBuddy
 	// 5.5.6 desktop's bundled CLI sends these identity headers on chat calls;
@@ -617,7 +669,17 @@ func backendHeaders(req *http.Request, sa *storedAuth) {
 	if req.Header.Get("X-IDE-Name") == "" {
 		req.Header.Set("X-IDE-Name", "WorkBuddy")
 		req.Header.Set("X-IDE-Type", "WorkBuddy")
-		req.Header.Set("X-IDE-Version", "5.5.6")
+		req.Header.Set("X-IDE-Version", desktopClientVersion)
+	}
+	// v0.9.69 (issue #56): the CLI identity carries the OpenAI Node SDK
+	// fingerprint family the official CLI's bundled SDK sends on chat
+	// calls (6.25.0 shape, real OS/arch). IDE-identity logins keep their
+	// own CodeBuddyIDE family — mixing the two would be a new mismatch.
+	// #59: this now keys on the effective family, so a switched-to-IDE
+	// credential drops the Stainless set and a switched-to-CLI credential
+	// gains it, whole-family either way.
+	if !isIDEPlatform(familyPlatformFor(sa)) {
+		applyStainlessHeaders(req)
 	}
 	// 2026-10-19 (PR #43): the Global realm's gateway rejects otherwise-valid
 	// streaming chat calls with 11128 "request illegal" ("This call failed
@@ -856,45 +918,71 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	// failed upstream (in-stream quota frame, empty stream, 429 family) fails
 	// here without an upstream call so the host rotates to another candidate
 	// instead of re-hammering the drained pair.
+	// v0.9.73: account-restriction fast-fail — a credential quarantined by
+	// 403+11140 (account restricted upstream) fails here without an upstream
+	// call, so the host rotates instead of re-hammering a flagged account.
+	if err := accountRestrictionError(req.AuthID, sa); err != nil {
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
+		return nil, err
+	}
 	if err := modelCooldownError(req.AuthID, sa, upstreamModel); err != nil {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
 		return nil, err
 	}
+	// Opt-in in-flight admission (account_max_concurrent): at capacity this
+	// fails plain so the host rotates to another candidate. The slot is held
+	// for the whole upstream call and released on every exit of this
+	// synchronous executor (defer below).
+	releaseSlot, err := accountSlotAcquire(req.AuthID)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseSlot()
 	// CodeBuddy rejects non-stream requests (code 11101), so always stream
 	// upstream and fold the chunks into a single chat.completion object.
 	// prepareUpstreamBody does forceStream + normalizeTools + rewriteSystem +
 	// ensureSystemMessage + rewriteModel in ONE unmarshal/marshal pass.
-	body := prepareUpstreamBody(req.Payload, req.OriginalRequest, sa, upstreamModel)
-	httpReq, err := http.NewRequest(http.MethodPost, endpointChatFor(sa), bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+	//
+	// v0.9.74: the round trip lives in the attempt closure so a 401 can
+	// renew the credential once and resend once through the SAME pipeline
+	// (the chat half of 0.9.68's billing-plane heal — magpie
+	// packages/workbuddy 0.1.31 renews "a chat or usage read" alike).
+	attempt := func(sa *storedAuth) (status int, hdr http.Header, errPayload string, completion []byte, err error) {
+		body := prepareUpstreamBody(req.Payload, req.OriginalRequest, sa, upstreamModel)
+		httpReq, err := http.NewRequest(http.MethodPost, endpointChatFor(sa), bytes.NewReader(body))
+		if err != nil {
+			return 0, nil, "", nil, err
+		}
+		backendHeaders(httpReq, sa)
+		// Compliance: route via host.http.do_stream so request-log captures the
+		// outbound call. Read entire body via the bridge, then fold SSE → completion.
+		stream, st, hd, err := hostHTTPDoStream(httpReq)
+		if err != nil {
+			return 0, nil, "", nil, fmt.Errorf("http_error: %w", err)
+		}
+		defer stream.Close()
+		reader := newHostStreamReader(stream)
+		if st >= 400 {
+			p, _ := io.ReadAll(reader)
+			return st, hd, string(p), nil, nil
+		}
+		completion, aerr := aggregateCompletion(reader, req.Model)
+		if aerr != nil {
+			return 0, nil, "", nil, aerr
+		}
+		return st, hd, "", completion, nil
 	}
-	backendHeaders(httpReq, sa)
-	// Compliance: route via host.http.do_stream so request-log captures the
-	// outbound call. Read entire body via the bridge, then fold SSE → completion.
-	stream, statusCode, respHdr, err := hostHTTPDoStream(httpReq)
-	if err != nil {
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
-		return nil, fmt.Errorf("http_error: %w", err)
+	succeed := func(completion []byte) ([]byte, error) {
+		publishUsage(req.Model, upstreamModel, authUID, started, usageDetailFromCompletion(completion), false, 0, "")
+		// v0.9.25: learn the real model behind a tier alias from the response echo.
+		noteLearnedRealModel(upstreamModel, modelFromCompletionPayload(completion))
+		// v0.9.73: a normal answer clears any restriction state — a restriction
+		// lifted upstream self-heals the credential without operator action.
+		noteAccountHealthy(req.AuthID, sa)
+		invalidateAccountCredits(req.AuthID, authUID)
+		return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
 	}
-	defer stream.Close()
-	reader := newHostStreamReader(stream)
-	if statusCode >= 400 {
-		payload, _ := io.ReadAll(reader)
-		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, string(payload))
-		noteModelRateLimitFromPayload(authUID, upstreamModel, statusCode, string(payload))
-		// Issue #35: >=400 failures feed the per-(credential, model) cooldown
-		// table (6004 keeps its own registry — the classifier defers to it).
-		noteModelCooldownFailure(req.AuthID, sa, upstreamModel, statusCode, string(payload))
-		reconcileAfterExecutorError(req.AuthID, statusCode, string(payload))
-		// v0.12.18: 11102 model-catalog rejections become a bilingual,
-		// realm-aware actionable error; 0.9.14 adds 11115/WAF/Retry-After
-		// shapes on top (header-aware full translator).
-		// v0.9.17: wrap with the account-level HTTP status so the host
-		// applies its real cooldown policy to this credential.
-		return nil, upstreamStatusError(statusCode, string(payload), translateChatUpstreamErrorFull(statusCode, string(payload), sa, respHdr))
-	}
-	completion, err := aggregateCompletion(reader, req.Model)
+	statusCode, respHdr, errPayload, completion, err := attempt(sa)
 	if err != nil {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
 		// Issue #35: in-stream frame errors / empty streams from the fold path
@@ -902,11 +990,56 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		noteModelCooldownFailure(req.AuthID, sa, upstreamModel, 0, err.Error())
 		return nil, err
 	}
-	publishUsage(req.Model, upstreamModel, authUID, started, usageDetailFromCompletion(completion), false, 0, "")
-	// v0.9.25: learn the real model behind a tier alias from the response echo.
-	noteLearnedRealModel(upstreamModel, modelFromCompletionPayload(completion))
-	invalidateAccountCredits(req.AuthID, authUID)
-	return okEnvelope(pluginapi.ExecutorResponse{Payload: completion})
+	if statusCode >= 400 {
+		// v0.9.74: chat-plane 401 heal — the APISIX gateway bounces a dead
+		// access token with the openresty "401 Authorization Required" HTML
+		// page (2026-10-26 field report, Buddycn account). One renewal and
+		// one resend happen here, BEFORE any failure bookkeeping, so a
+		// rescued request is indistinguishable from one that simply worked;
+		// a resend that still fails becomes the primary failure below.
+		var verdict chat401Verdict
+		if statusCode == http.StatusUnauthorized {
+			outcome, fresh := healChat401(req.AuthID, sa)
+			switch outcome {
+			case chat401HealResend:
+				st2, hdr2, p2, comp2, err2 := attempt(fresh)
+				if err2 == nil && st2 < 400 {
+					return succeed(comp2)
+				}
+				if err2 == nil && st2 >= 400 {
+					statusCode, respHdr, errPayload = st2, hdr2, p2
+					if st2 == http.StatusUnauthorized {
+						verdict.RenewedRefused = true
+					}
+				} else {
+					publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err2.Error())
+					noteModelCooldownFailure(req.AuthID, sa, upstreamModel, 0, err2.Error())
+					return nil, err2
+				}
+			case chat401SessionDead:
+				verdict.SessionDead = true
+			}
+		}
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errPayload)
+		noteModelRateLimitFromPayload(authUID, upstreamModel, statusCode, errPayload)
+		// v0.9.73: 403+11140 quarantines the credential (account restricted
+		// upstream) — the pick filter and executor fast-fail hold it out of
+		// rotation until the backoff window lapses or a healthy answer clears it.
+		noteAccountRestrictionFromPayload(req.AuthID, sa, statusCode, errPayload)
+		// Issue #35: >=400 failures feed the per-(credential, model) cooldown
+		// table (6004 keeps its own registry — the classifier defers to it).
+		noteModelCooldownFailure(req.AuthID, sa, upstreamModel, statusCode, errPayload)
+		reconcileAfterExecutorError(req.AuthID, statusCode, errPayload)
+		// v0.12.18: 11102 model-catalog rejections become a bilingual,
+		// realm-aware actionable error; 0.9.14 adds 11115/WAF/Retry-After
+		// shapes on top (header-aware full translator).
+		// v0.9.17: wrap with the account-level HTTP status so the host
+		// applies its real cooldown policy to this credential.
+		// v0.9.74: a heal verdict (session dead / renewed-but-refused)
+		// appends its bilingual re-login guidance to the translated error.
+		return nil, verdict.annotate(upstreamStatusError(statusCode, errPayload, translateChatUpstreamErrorFull(statusCode, errPayload, sa, respHdr)))
+	}
+	return succeed(completion)
 }
 
 // executorStreamRequest wraps the host's executor.execute_stream RPC: the
@@ -940,9 +1073,23 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
 		return nil, err
 	}
+	// v0.9.73: account-restriction fast-fail (same contract as the non-stream
+	// path — quarantined credentials never reach the upstream).
+	if err := accountRestrictionError(req.AuthID, sa); err != nil {
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
+		return nil, err
+	}
 	// Issue #35: cooldown fast-fail (same contract as the non-stream path).
 	if err := modelCooldownError(req.AuthID, sa, upstreamModel); err != nil {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
+		return nil, err
+	}
+	// Opt-in in-flight admission (account_max_concurrent), same contract as
+	// the non-stream path. Release semantics differ per branch below: the
+	// sync collector holds the slot for this function's lifetime, the async
+	// pump holds it for the goroutine's.
+	releaseSlot, err := accountSlotAcquire(req.AuthID)
+	if err != nil {
 		return nil, err
 	}
 	body := req.Payload
@@ -957,18 +1104,26 @@ func handleExecStream(raw []byte) ([]byte, error) {
 
 	// No async stream id → fall back to synchronous chunk collection.
 	if req.StreamID == "" {
+		defer releaseSlot()
 		collector := &sseUsageCollector{}
-		chunks, statusCode, errCollect := collectUpstreamStream(body, sa, sseFramed, collector, upstreamModel)
+		// v0.9.74: authID rides along so the chat-401 heal inside the
+		// collector can resolve the credential's host identity.
+		chunks, statusCode, errCollect := collectUpstreamStream(body, sa, req.AuthID, sseFramed, collector, upstreamModel)
 		if errCollect != nil {
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errCollect.Error())
 			// Issue #35: the sync collector surfaces frame errors,
 			// empty streams and >=400s as its error — feed the pair
 			// cooldown so the NEXT request rotates candidates.
 			noteModelCooldownFailure(req.AuthID, sa, upstreamModel, statusCode, errCollect.Error())
+			// v0.9.73: a >=400 collected here may be the 11140 restriction —
+			// feed the quarantine registry too (no-op for anything else).
+			noteAccountRestrictionFromPayload(req.AuthID, sa, statusCode, errCollect.Error())
 			return nil, errCollect
 		}
 		publishUsage(req.Model, upstreamModel, authUID, started, collector.detail(), false, 0, "")
 		noteLearnedRealModel(upstreamModel, collector.respModel)
+		// v0.9.73: healthy answer clears restriction state (self-heal).
+		noteAccountHealthy(req.AuthID, sa)
 		invalidateAccountCredits(req.AuthID, authUID)
 		return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
 	}
@@ -982,11 +1137,25 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointChatFor(sa), bytes.NewReader(body))
 	if err != nil {
 		cancel()
+		releaseSlot()
 		streamEmitError(req.StreamID, err.Error())
 		streamClose(req.StreamID)
 		return okEnvelope(streamResponse{Headers: headers})
 	}
 	backendHeaders(httpReq, sa)
+	// v0.9.74: the pump rebuilds the request from the fresh snapshot when a
+	// chat 401 is healed (same ctx — the hand-off lifetime is unchanged; the
+	// body is reused as-is: the realm family cannot flip within one
+	// credential's refresh, only the auth-bearing headers and endpoint ride
+	// the fresh snapshot).
+	buildReq := func(fresh *storedAuth) (*http.Request, error) {
+		r, rerr := http.NewRequestWithContext(ctx, http.MethodPost, endpointChatFor(fresh), bytes.NewReader(body))
+		if rerr != nil {
+			return nil, rerr
+		}
+		backendHeaders(r, fresh)
+		return r, nil
+	}
 	// stream_head_timeout (opt-in): when configured > 0, hold the async
 	// hand-off until the pump reports its first decisive upstream event, so a
 	// failure that lands before the model answers becomes a status-bearing
@@ -996,7 +1165,13 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	if secs := loadedStreamHeadTimeout(); secs > 0 {
 		gate = newStreamHeadGate(time.Duration(secs) * time.Second)
 	}
-	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, sa, gate)
+	// The admission slot is held for the pump's whole lifetime — the upstream
+	// call is still in flight after this handler returns (that is the point
+	// of async), so the release rides the goroutine, not this function.
+	go func() {
+		defer releaseSlot()
+		pumpUpstreamStream(httpReq, buildReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, sa, gate)
+	}()
 	if gate != nil {
 		if headErr := awaitStreamHead(gate); headErr != nil {
 			return nil, headErr

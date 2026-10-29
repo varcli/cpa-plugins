@@ -50,6 +50,34 @@ func prepareUpstreamBody(payload, original []byte, sa *storedAuth, upstreamModel
 	// 3. rewriteSystem: strip blocked Claude Code template phrases + force thinking.
 	rewriteSystemInPlace(obj)
 
+	// 3.2 sanitizeHistory: the same blocked phrases also arrive inside
+	// assistant history echoes and user pastes (agent hosts quote their own
+	// system prompt / config in conversation history). Tencent's 11-128
+	// channel gate scans the WHOLE body, not just system messages —
+	// 2026-10-21 replay evidence: a 50-message body with the phrases only in
+	// msg[4] (user) and msg[9] (assistant, 15x) 400s even with a clean
+	// system prompt; scrubbing every role to zero occurrences flips 400 →
+	// 200. Word-level rewrites keep meaning intact, so the v0.9.18
+	// system-only gate (which retired the wholesale neutralPrompt swap) is
+	// not in scope here.
+	sanitizeHistoryPhrasesInPlace(obj)
+
+	// 3.25 sanitizeIdentity: the generalized self-introduction family
+	// (verb table) and the DSH brand shrink, scoped to system/developer/
+	// assistant only — the #574 boundary matrix shows the identity
+	// sentences pass from a user message while 400ing from assistant
+	// history, and rewriting user/tool content would desync the model's
+	// view from what is on disk (#537). Runs AFTER 3.2 so the specific
+	// phrase rewrites (which need the intact brand) win first, and BEFORE
+	// the 3.5 reasoning fold so folded reasoning cannot re-arm the family.
+	sanitizeIdentityInPlace(obj)
+
+	// 3.3 typeUnionToolSchemas: a oneOf of objects with no type gets
+	// type:object — kimi-k3.1-pro 400s "Invalid request parameters" on the
+	// untyped union even when every branch is an object, and takes the same
+	// body with the type beside it (magpie workbuddy 0.1.33 / #378).
+	typeUnionToolSchemas(obj)
+
 	// 3.5 injectReasoning: fold historical assistant reasoning_content into
 	// content as <thought> blocks — the upstream drops the non-standard
 	// field from multi-turn history and the model loses its own prior
@@ -349,9 +377,179 @@ func mirrorReasoningEffort(obj map[string]any) bool {
 	return false
 }
 
-// compactToolDescriptions strips tool.function.description when the serialized
-// tools array exceeds toolDescriptionByteLimit (64KB). Tencent's body-size
-// filter rejects large tool descriptions. Mirrors OmniRoute codebuddy-cn.ts.
+// typeUnionToolSchemaOneKeys / typeUnionToolSchemaListKeys / typeUnionToolSchemaMapKeys
+// are the schema-keyword walk sets (magpie SUB_ONE / SUB_LIST / SUB_MAP,
+// byte-aligned): only these keys are descended, so examples / default /
+// const payloads are never touched.
+var typeUnionToolSchemaOneKeys = []string{"items", "additionalItems", "unevaluatedItems", "contains", "not", "if", "then", "else", "propertyNames", "additionalProperties", "unevaluatedProperties"}
+var typeUnionToolSchemaListKeys = []string{"anyOf", "oneOf", "allOf", "prefixItems"}
+var typeUnionToolSchemaMapKeys = []string{"properties", "patternProperties", "$defs", "definitions", "dependentSchemas"}
+
+// typeUnionToolSchemas walks obj["tools"] in all three shapes (the 0.9.72
+// compaction discipline: nested function.parameters, flat Responses-API
+// parameters, MCP-namespace sub-tools) and mends each parameters schema with
+// schemaTypeUnions. Reports whether anything changed.
+func typeUnionToolSchemas(obj map[string]any) bool {
+	tools, ok := obj["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		return false
+	}
+	changed := false
+	var mendTool func(t any)
+	mendTool = func(t any) {
+		tool, ok := t.(map[string]any)
+		if !ok {
+			return
+		}
+		if fn, ok := tool["function"].(map[string]any); ok {
+			if ps, ok := fn["parameters"].(map[string]any); ok {
+				changed = schemaTypeUnions(ps, ps, 0) || changed
+			}
+		}
+		if ps, ok := tool["parameters"].(map[string]any); ok {
+			changed = schemaTypeUnions(ps, ps, 0) || changed
+		}
+		if subTools, ok := tool["tools"].([]any); ok {
+			for _, sub := range subTools {
+				mendTool(sub)
+			}
+		}
+	}
+	for _, t := range tools {
+		mendTool(t)
+	}
+	return changed
+}
+
+// schemaTypeUnions gives a oneOf with no sibling type the type "object"
+// when every branch is a typed object, itself or through a chain of local
+// $refs (magpie workbuddy typeUnions, workbuddy 0.1.33 / issue #378:
+// kimi-k3.1-pro answers 400 "Invalid request parameters" to such a union
+// even when every branch is an object, and takes the same request with
+// "type": "object" beside the oneOf — three real dsh runs with all 198
+// tools). A union of other or mixed types, an anyOf, and a $ref that is
+// missing, external or circular are left as they came. Only schema keywords
+// are walked. Reports whether anything changed.
+func schemaTypeUnions(s, root map[string]any, depth int) bool {
+	if s == nil || depth > 64 {
+		return false
+	}
+	changed := false
+	if _, hasType := s["type"]; !hasType {
+		if oneOf, ok := s["oneOf"].([]any); ok && len(oneOf) > 0 {
+			allObject := true
+			for _, b := range oneOf {
+				if !typeUnionObjectBranch(root, b, nil) {
+					allObject = false
+					break
+				}
+			}
+			if allObject {
+				s["type"] = "object"
+				changed = true
+			}
+		}
+	}
+	for _, k := range typeUnionToolSchemaOneKeys {
+		if sub, ok := s[k].(map[string]any); ok {
+			changed = schemaTypeUnions(sub, root, depth+1) || changed
+		}
+	}
+	for _, k := range typeUnionToolSchemaListKeys {
+		if list, ok := s[k].([]any); ok {
+			for _, v := range list {
+				if sub, ok := v.(map[string]any); ok {
+					changed = schemaTypeUnions(sub, root, depth+1) || changed
+				}
+			}
+		}
+	}
+	for _, k := range typeUnionToolSchemaMapKeys {
+		m, ok := s[k].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, v := range m {
+			if sub, ok := v.(map[string]any); ok {
+				changed = schemaTypeUnions(sub, root, depth+1) || changed
+			}
+		}
+	}
+	return changed
+}
+
+// typeUnionObjectBranch says whether b is a typed object, itself or where its
+// local $refs lead (magpie objectBranch): a $ref seen before on the way is a
+// cycle, and not; more than 16 hops is not.
+func typeUnionObjectBranch(root map[string]any, b any, seen []string) bool {
+	branch, ok := b.(map[string]any)
+	if !ok {
+		return false
+	}
+	if t, has := branch["type"]; has {
+		s, _ := t.(string)
+		return s == "object"
+	}
+	ref, _ := branch["$ref"].(string)
+	if ref == "" || len(seen) > 16 {
+		return false
+	}
+	for _, s := range seen {
+		if s == ref {
+			return false
+		}
+	}
+	target := typeUnionLocalRef(root, ref)
+	if target == nil {
+		return false
+	}
+	next := make([]string, len(seen), len(seen)+1)
+	copy(next, seen)
+	next = append(next, ref)
+	return typeUnionObjectBranch(root, target, next)
+}
+
+// typeUnionLocalRef resolves a local "#/..." JSON pointer in root (with ~0 / ~1
+// unescaping, magpie localRef); a non-local ref or a missing target returns nil.
+func typeUnionLocalRef(root map[string]any, ref string) map[string]any {
+	if !strings.HasPrefix(ref, "#/") {
+		return nil
+	}
+	var at any = root
+	for _, seg := range strings.Split(ref[2:], "/") {
+		seg = strings.ReplaceAll(seg, "~1", "/")
+		seg = strings.ReplaceAll(seg, "~0", "~")
+		m, ok := at.(map[string]any)
+		if !ok {
+			return nil
+		}
+		next, ok := m[seg]
+		if !ok {
+			return nil
+		}
+		at = next
+	}
+	target, ok := at.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return target
+}
+
+// compactToolDescriptions strips tool descriptions when the serialized tools
+// array exceeds toolDescriptionByteLimit (64KB). Tencent's body-size filter
+// rejects large tool descriptions. Mirrors OmniRoute codebuddy-cn.ts.
+//
+// v0.9.72 (issue #63): the old loop only understood the chat-completions
+// nested shape (tool.function.description), so two Responses-API shapes slid
+// through UNCOMPRESSED: flat function tools ({"type":"function","name":...,
+// "description":...}) and MCP namespace tools ({"type":"namespace","name":
+// "mcp__rea","description":...,"tools":[...]}). A Codex Desktop session with
+// the full mcp__rea extension serializes 322KB of tool definitions — the
+// compactor saw none of it (every tool hit the `continue`), the full payload
+// reached Moonshot, and kimi-k3.1-pro answered upstream 400 code=11133 /
+// extError 400001 "rejected by the model provider" 100% of the time. The
+// cleaner now walks all three shapes recursively.
 func compactToolDescriptions(obj map[string]any) bool {
 	tools, ok := obj["tools"].([]any)
 	if !ok || len(tools) == 0 {
@@ -365,19 +563,36 @@ func compactToolDescriptions(obj map[string]any) bool {
 		return false
 	}
 	changed := false
-	for _, t := range tools {
+	var cleanTool func(t any)
+	cleanTool = func(t any) {
 		tool, ok := t.(map[string]any)
 		if !ok {
-			continue
+			return
 		}
-		fn, ok := tool["function"].(map[string]any)
-		if !ok {
-			continue
+		// 1. Standard chat-completions nesting: tool.function.description.
+		if fn, ok := tool["function"].(map[string]any); ok {
+			if _, hasDesc := fn["description"]; hasDesc {
+				delete(fn, "description")
+				changed = true
+			}
 		}
-		if _, hasDesc := fn["description"]; hasDesc {
-			delete(fn, "description")
+		// 2. Flat shape (Responses API / built-in tools): description at the
+		// tool's own top level. For the nested shape this key simply is not
+		// present, so the delete is a no-op there.
+		if _, hasDesc := tool["description"]; hasDesc {
+			delete(tool, "description")
 			changed = true
 		}
+		// 3. MCP namespace shape: the functions live under tool["tools"] —
+		// the 170-tool mcp__rea payload carries almost all of its 322KB here.
+		if subTools, ok := tool["tools"].([]any); ok {
+			for _, sub := range subTools {
+				cleanTool(sub)
+			}
+		}
+	}
+	for _, t := range tools {
+		cleanTool(t)
 	}
 	return changed
 }
@@ -700,8 +915,10 @@ func ensureSystemMessage(payload []byte, sa *storedAuth) []byte {
 
 // (rewriteContentField / sanitizeContentText were removed in v0.9.18: they
 // applied the wholesale neutralPrompt replacement to messages of ANY role.
-// The system-scoped replacements live in rewriteSystemContentField above;
-// non-system messages are never rewritten — see rewriteSystemMessagesInPlace.)
+// Phrase-level rewrites are a different thing and are applied to every role
+// since v0.9.63: the system-scoped ones live in rewriteSystemContentField
+// above / rewriteSystemMessagesInPlace below, and the history-wide pass lives
+// in sanitizeHistoryPhrasesInPlace. Neither ever replaces a whole message.)
 
 // Blocked-template variants seen in the wild beyond the two verbatim
 // templates above: capitalization drift, straight/curly quote drift, and
@@ -744,6 +961,137 @@ var (
 	// request (47 messages, 66 tools, reasoning_effort=max) flips 400 -> 200.
 	reDeepSeekHarnessIntro          = regexp.MustCompile(`(?i)you are an ai agent powered by deepseek harness`)
 	deepSeekHarnessIntroReplacement = "You are an AI assistant"
+
+	// reDeepSeekHarnessWebGUI matches the fourth member of the same 11-128
+	// family as the intro signature above: the runtime-context line "the
+	// DeepSeek Harness Web GUI" that DSH injects into every session. Single-
+	// variable replay against copilot.tencent.com: the verbatim four-token
+	// phrase "DeepSeek Harness Web GUI" returns 400 code 11-128, while
+	// breaking any one token — "DeepSeek Harness Site GUI", "DeepSeek
+	// Harness Web UI", "Harness Web GUI", "Web GUI" alone — returns 200.
+	// Swap it for the verified-safe "web interface" phrasing.
+	reDeepSeekHarnessWebGUI          = regexp.MustCompile(`(?i)deepseek\s+harness\s+web\s+gui`)
+	deepSeekHarnessWebGUIReplacement = "DeepSeek Harness web interface"
+
+	// v0.9.79 (field report 2026-10-27, model deepseek-v4.1-flash): the
+	// 11-128 family was GENERALIZED server-side into a "client self-
+	// introduction sentence pattern + brand" gate. workbuddy2api-hub
+	// wb_proxy.py (#533/#537/#539, A/B-replayed against copilot.tencent.com)
+	// verified three members and then generalized the verb table after
+	// observing the upstream grow the rule one verb at a time:
+	//
+	//      You are an AI agent powered by DeepSeek Harness.
+	//      You are a coding agent powered by the deepseek-v4.1-flash model.
+	//      You are an AI assistant built on DeepSeek.
+	//
+	// The #574 boundary matrix (single-variable, CN realm only):
+	// assistant/system carrying the sentence → 400/11128; user carrying the
+	// same sentence → 200; inserting "the" before the brand → 200. So the
+	// matcher below is ported from the reference with its bounded window —
+	// up to three modifier words between article and verb, noun optional,
+	// comma tolerated between noun and verb — which is what keeps sentences
+	// like "You are free to use tools built by others" out of the match
+	// (the verb sits four words deep there). RE2 has no lookahead, so the
+	// sentence terminator is consumed and re-emitted by the replacer.
+	// DIVERGENCE from the reference (deliberate, precision): the match must
+	// start at a boundary — text start, newline, sentence punctuation +
+	// space, or an opening quote/bracket (agents and models QUOTE prompts:
+	// '"You are … powered by …"' in an assistant echo). Every confirmed
+	// trigger sentence is boundary-initial in its prompt, and the boundary
+	// keeps mid-sentence "you are" clauses ("The tools you are using were
+	// built by Acme.") out of the rewrite.
+	reIdentitySelfIntro = regexp.MustCompile(`(?i)(^|\n|[.!?;:,][ \t]+|["'(\[{][ \t]*)` +
+		`you are\s+` +
+		`(?:an?\s+|the\s+)?(?:[\w.-]+\s+){0,3}?` +
+		`(?:agent|assistant|model|ai|llm)?[\s,]*` +
+		`(?:powered\s+by|built\s+on|built\s+by|created\s+by|developed\s+by|made\s+by|trained\s+by)` +
+		`[^\n]*?(?:\.(?:[ \t\r"]|\n|$)|\n|$)`)
+	identitySelfIntroReplacement = "You are a helpful AI assistant."
+
+	// reBrandProse shrinks the DSH brand in prose ("DeepSeek Harness" →
+	// "DeepSeek") for the identity-scoped roles. #574's second finding: the
+	// brand alone passes, but brand + the GUI description phrases ("this
+	// page" / "this GUI" / "this app") co-occurring hits the same 11-128
+	// check; shrinking just the brand passes while keeping the sentence
+	// readable. Only space/tab-separated prose forms match — hyphenated or
+	// underscored identifiers (/opt/deepseek-harness/app, deepseek_harness)
+	// stay byte-identical (#574 measured that [ \t_-]* breaks them). Runs
+	// AFTER the Web GUI four-token rewrite above (that rule needs the full
+	// brand to match first).
+	reBrandProse          = regexp.MustCompile(`(?i)deepseek[ \t]+harness`)
+	brandProseReplacement = "DeepSeek"
+
+	// reAnthropicBillingHeader strips the x-anthropic-billing-header line
+	// Claude Code embeds in its first system block (magpie FLAGGED and
+	// workbuddy2api-hub SANITIZE_HDR_RE both remove it; member of the same
+	// 11-128 family). The bare-header rename below catches occurrences
+	// whose value was formatted differently (no colon-value shape).
+	reAnthropicBillingHeader = regexp.MustCompile(`(?i)x-anthropic-billing-header:[^;\r\n]*;?\s*`)
+	reAnthropicBareHeader    = regexp.MustCompile(`(?i)x-anthropic-billing-header`)
+
+	// reCodexSecondSentence matches the Codex CLI base-instructions SECOND
+	// sentence on its own — the two-sentence reCodexCliIntro above needs
+	// the "You are a coding agent…" opener adjacent, but Codex Desktop and
+	// drifted releases send the attribution sentence alone (magpie FLAGGED
+	// matches it with a lookbehind guard; RE2 has none, so the optional
+	// "the " is absorbed and re-emitted, making the rewrite idempotent).
+	reCodexSecondSentence          = regexp.MustCompile(`(?i)\b(?:the\s+)?codex\s+cli\s+is\s+an\s+open\s+source\s+project\s+led\s+by\s+openai\s*\.?`)
+	codexSecondSentenceReplacement = "The Codex CLI is an open source project led by OpenAI."
+
+	// reOMOJunior matches the OhMyOpenCode junior-agent fingerprint — a
+	// confirmed contiguous 11-128 trigger (workbuddy2api-hub, A/B tested:
+	// either token alone passes, only the full phrase 400s).
+	reOMOJunior          = regexp.MustCompile(`(?i)sisyphus-junior\s*-\s*focused\s+executor\s+from\s+ohmyopencode`)
+	omoJuniorReplacement = "Sisyphus-Junior - Focused executor"
+
+	// v0.9.80: the pasted-error poisoning-loop breaker as a word-boundary
+	// match. 0.9.79 used a bare substring replace, which also rewrote
+	// the code embedded inside longer digit runs (probe: ts=1729111280
+	// became ts=172911-1280, order 900111285 became 90011-1285) — user
+	// data the model was asked to read, corrupted silently. The gate's
+	// verified trigger shapes are the BARE code: "code 11128 ...",
+	// `{"code":11128,...}` — the digits as their own token. \b (ASCII
+	// word boundary) fires for every one of those (spaces, colons,
+	// commas, quotes, CJK neighbors are all non-word bytes) and leaves
+	// longer digit runs and letter-flanked forms untouched.
+	rePastedErrorCode          = regexp.MustCompile(`\b11128\b`)
+	pastedErrorCodeReplacement = "11-128"
+
+	// v0.9.81: Claude Code embeds cc_* key-value metadata (cc_entrypoint=
+	// and siblings) as text; the reference strips the pairs in every
+	// role (wb_proxy.py SANITIZE_KV_RE, in tree since the #516 era) as
+	// part of the same fingerprint family as the billing header above.
+	// \b keeps identifier-shaped hosts (foo_cc_x, gcc_=...) out; the
+	// fixpoint loop handles a pair whose value exposes another (the
+	// reference loops until stable the same way).
+	reCCKeyValue = regexp.MustCompile(`(?i)\bcc_[a-z0-9_]+=[^;\r\n]*;?\s*`)
+
+	// v0.9.81: DSH's official @deepseek-ai/dsh-file-reference plugin
+	// (pulled in via @deepseek-ai/dsh-api-session-controller) injects
+	// FILE_REFERENCE_PROMPT into the system prompt, and that segment is
+	// the FOURTH confirmed member of the 11-128 content family
+	// (workbuddy2api-hub #675/#677/#680, fixes #681/#683/#684,
+	// 2026-10-27/28 single-variable replays on the CN realm):
+	//
+	//   A: Tokens prefixed with @ are paths the user explicitly referenced.
+	//   B: Relative paths resolve from the workspace root; absolute paths
+	//      identify files or directories on the host.
+	//   (+ a three-sentence tail about trailing slashes / read tool /
+	//    @"..." quoting)
+	//
+	// Boundary replays: each sentence alone 200; A+B contiguous 400
+	// (#683, 2026-10-27); the full five-sentence paragraph 400 while A+B
+	// alone passed on the next day's pool (#684) — the gate tightened,
+	// and the safe read is that the whole contiguous segment is the
+	// match unit. Either way the minimal fix is the same and breaks
+	// both: insert one "that" into sentence A, which preserves the
+	// meaning verbatim and makes the segment non-contiguous. The
+	// capture groups keep the original case (lowercase prompts stay
+	// lowercase), and the rewrite is naturally idempotent — the fixed
+	// sentence carries "paths that the user", which the pattern (paths
+	// immediately followed by "the user") can never match again.
+	// Scope matches the GUI segment: system/developer/assistant only.
+	reDshFileRef = regexp.MustCompile(`(?i)(Tokens prefixed with @ are paths )(the user explicitly referenced\.)`)
 )
 
 func sanitizeBlockedTemplates(s string) string {
@@ -758,15 +1106,15 @@ func sanitizeBlockedTemplates(s string) string {
 	// v0.9.54 (issue #31): Codex CLI intro signature — Tencent gateway
 	// channel risk-control (11128). Exact match first (the verified
 	// trigger), then the tolerant regex for case / phrasing drift between
-	// Codex releases. System-role gating happens upstream in
-	// rewriteSystemMessagesInPlace — user content stays untouched.
+	// Codex releases. Application scope is decided by the caller
+	// (rewriteSystemMessagesInPlace for system/developer, and
+	// sanitizeHistoryPhrasesInPlace for every other role since v0.9.63).
 	s = strings.ReplaceAll(s,
 		"You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI.",
 		codexCliIntroReplacement)
 	s = reCodexCliIntro.ReplaceAllString(s, codexCliIntroReplacement)
 	// v0.9.62: DeepSeek Harness intro signature — same Tencent 11-128
-	// channel gate. System-role gating happens upstream in
-	// rewriteSystemMessagesInPlace — user content stays untouched.
+	// channel gate. Same caller-decides scope as the Codex rule above.
 	s = reDeepSeekHarnessIntro.ReplaceAllString(s, deepSeekHarnessIntroReplacement)
 	// Tencent CodeBuddy identity line: exact match first (the verbatim
 	// trigger), then the tolerant regex for capitalization / prefix drift.
@@ -774,7 +1122,282 @@ func sanitizeBlockedTemplates(s string) string {
 		"You are CodeBuddy Code, Tencent's official CLI for CodeBuddy.",
 		"You are CodeBuddy Code, Tencent's official CLI tool for CodeBuddy.")
 	s = reCodeBuddyCli.ReplaceAllString(s, "Tencent's official CLI tool for CodeBuddy")
+	// v0.9.62 follow-up: the DSH runtime-context line "the DeepSeek Harness
+	// Web GUI" is a separate member of the same Tencent 11-128 phrase family
+	// (verified by replay: only the full four-token phrase triggers).
+	s = reDeepSeekHarnessWebGUI.ReplaceAllString(s, deepSeekHarnessWebGUIReplacement)
+	// v0.9.79: Codex attribution sentence standalone (no opener adjacent).
+	s = reCodexSecondSentence.ReplaceAllString(s, codexSecondSentenceReplacement)
+	// v0.9.79: Claude Code's first system block embeds its billing header
+	// as text; strip the value shape, then rename any bare leftovers.
+	s = reAnthropicBillingHeader.ReplaceAllString(s, "")
+	s = reAnthropicBareHeader.ReplaceAllString(s, "x-anthropic-billing-hdr")
+	// v0.9.81: Claude Code's cc_* key-value metadata pairs, all roles —
+	// same fingerprint family as the billing header (reference
+	// SANITIZE_KV_RE). Every productive pass strictly shortens the
+	// string, so the loop converges; the cap is pure paranoia.
+	for i := 0; i < 8; i++ {
+		r := reCCKeyValue.ReplaceAllString(s, "")
+		if r == s {
+			break
+		}
+		s = r
+	}
+	// v0.9.79: Claude Code feedback line — "give" phrasing is the verified
+	// trigger spelling, "provide" passes (workbuddy2api-hub SANITIZE_REWRITES).
+	s = strings.ReplaceAll(s,
+		"To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
+		"To provide feedback, users should report the issue at https://github.com/anthropics/claude-code/issues")
+	// v0.9.79: OhMyOpenCode junior-agent fingerprint.
+	s = reOMOJunior.ReplaceAllString(s, omoJuniorReplacement)
+	// v0.9.79: the error code itself, pasted as text (users quote the 503
+	// back into the agent while debugging), is a trigger and poisons every
+	// later turn of that conversation — the hyphenated spelling passes and
+	// reads the same. This is the poisoning-loop breaker; it runs in the
+	// all-roles set precisely because pastes land in user messages.
+	// v0.9.80: word-boundary match instead of a bare substring replace —
+	// the gate trigger is the BARE code ("code 11128", `"code":11128`),
+	// where the digits stand as their own token; a 11128 embedded inside a
+	// longer digit run (timestamps like 1729111280, order numbers like
+	// 900111285) is ordinary user data, and rewriting it silently corrupted
+	// logs and code the model was asked to read (probe-verified on 0.9.79).
+	// \b keeps every known paste shape covered — spaces, punctuation and
+	// CJK neighbors are all non-word bytes, so the boundary fires — while
+	// longer digit runs (and letter-flanked forms like x11128x) pass
+	// through untouched, same as the reference's own trigger shape.
+	s = rePastedErrorCode.ReplaceAllString(s, pastedErrorCodeReplacement)
 	return s
+}
+
+// sanitizeHistoryPhrasesInPlace applies the blocked-phrase rewrites to EVERY
+// message in the history — assistant echoes, tool results and user pastes
+// included (v0.9.63). Evidence chain (2026-10-21, single-variable replays
+// against copilot.tencent.com): a 50-message body whose only "DeepSeek
+// Harness Web GUI" occurrences live in msg[4] (user, 1x) and msg[9]
+// (assistant history echo of a DSH runtime-context summary, 15x) 400s with
+// code 11128 even when the system prompt is fully sanitized; scrubbing the
+// phrase in every role flips the same body to 200. The second trigger found
+// the same way: the Claude Code git-injection line "Main branch (you will
+// usually use this for PRs)" hits verbatim inside an assistant history echo
+// (case-insensitive, every token load-bearing: MainX/branchX/PRx/
+// broken-bracket variants all pass). The Tencent channel gate scans the
+// whole request body, so the v0.9.18 system-only gate leaves these echoes
+// exposed.
+//
+// Scope guard: this is NOT the retired v0.9.18 wholesale swap. Every
+// rewrite is the same single-word/synonym substitution the system path has
+// used since v0.9.28 — meaning-preserving, replay-verified safe — and
+// content without a trigger phrase passes byte-identical.
+//
+// Role dispatch: none — every role goes through the same phrase set. Per-phrase
+// role scoping is not trustworthy here: replay shows the Claude Code intro
+// phrase passes untouched from an assistant message while the Web GUI phrase
+// 400s from the same message, so which phrase the gate reads in which role is
+// not modellable from outside. Phrase-level substitution is meaning-preserving
+// in every role, so the blanket pass is the cheap side of that bet.
+//
+// Handles: string content; array content (per text part); tool_calls
+// function.arguments (agents echo protocol text there). Assistant
+// reasoning_content / reasoning mirrors are scrubbed HERE, before the
+// injectReasoningInPlace fold (step 3.5) folds them into content — otherwise
+// the fold would re-arm the phrases in already-sanitized content.
+func sanitizeHistoryPhrasesInPlace(obj map[string]any) bool {
+	msgs, ok := obj["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		return false
+	}
+	changed := false
+	scrub := sanitizeBlockedTemplates
+	for _, mi := range msgs {
+		m, ok := mi.(map[string]any)
+		if !ok {
+			continue
+		}
+		// reasoning_content / reasoning (assistant-only fields) are folded
+		// into content by injectReasoningInPlace AFTER this pass (step 3.5),
+		// so sanitize them here or the fold re-arms the phrases.
+		if role, _ := m["role"].(string); strings.EqualFold(strings.TrimSpace(role), "assistant") {
+			for _, key := range []string{"reasoning_content", "reasoning"} {
+				if rc, ok := m[key].(string); ok && rc != "" {
+					if r := scrub(rc); r != rc {
+						m[key] = r
+						changed = true
+					}
+				}
+			}
+		}
+		if c, ok := m["content"].(string); ok {
+			if r := scrub(c); r != c {
+				m["content"] = r
+				changed = true
+			}
+		} else if parts, ok := m["content"].([]any); ok {
+			for _, pi := range parts {
+				p, ok := pi.(map[string]any)
+				if !ok {
+					continue
+				}
+				if t, ok := p["text"].(string); ok {
+					if r := scrub(t); r != t {
+						p["text"] = r
+						changed = true
+					}
+				}
+			}
+		}
+		if tcs, ok := m["tool_calls"].([]any); ok {
+			for _, tci := range tcs {
+				tc, ok := tci.(map[string]any)
+				if !ok {
+					continue
+				}
+				fn, ok := tc["function"].(map[string]any)
+				if !ok || fn == nil {
+					continue
+				}
+				if a, ok := fn["arguments"].(string); ok {
+					if r := scrub(a); r != a {
+						fn["arguments"] = r
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	return changed
+}
+
+// sanitizeIdentitySentences applies the generalized self-introduction
+// rewrites to one text blob: the verb-family sentence first, then the DSH
+// brand shrink. The brand shrink must run LAST — the Web GUI four-token
+// rewrite in sanitizeBlockedTemplates (which ran earlier in the pipeline)
+// needs the intact two-word brand to match its pattern.
+func sanitizeIdentitySentences(s string) string {
+	out := reIdentitySelfIntro.ReplaceAllStringFunc(s, func(m string) string {
+		// The match carries a sentence-boundary prefix (^ | \n | .!?;: +
+		// spaces) and may end on a consumed newline — RE2 has no lookahead,
+		// so both are split off and re-emitted around the neutral sentence.
+		// The prefix is pure ASCII boundary punctuation, and the body always
+		// begins with "you are", so the first non-boundary byte is the split
+		// point.
+		p := 0
+		for p < len(m) {
+			switch m[p] {
+			case '\n', '.', '!', '?', ';', ':', ',', ' ', '\t', '"', '\'', '(', '[', '{':
+				p++
+				continue
+			}
+			break
+		}
+		prefix := m[:p]
+		if strings.HasSuffix(m, "\n") {
+			return prefix + identitySelfIntroReplacement + "\n"
+		}
+		if n := len(m); n > 0 {
+			// A period terminated by a space/tab/CR/quote was
+			// consumed together with its follower — re-emit the
+			// follower so the next word keeps its gap and a JSON
+			// string value keeps its closing quote (identity
+			// sentences land inside tool_calls arguments).
+			switch m[n-1] {
+			case ' ', '\t', '\r', '"':
+				return prefix + identitySelfIntroReplacement + m[n-1:]
+			}
+		}
+		return prefix + identitySelfIntroReplacement
+	})
+	// v0.9.81: DSH file-reference segment — runs between the verb family
+	// and the brand shrink, mirroring the reference order (identity
+	// sentence -> GUI segment -> file-reference -> brand).
+	out = reDshFileRef.ReplaceAllString(out, "${1}that ${2}")
+	out = reBrandProse.ReplaceAllString(out, brandProseReplacement)
+	return out
+}
+
+// sanitizeIdentityInPlace applies sanitizeIdentitySentences to the
+// identity-scoped roles ONLY: system, developer and assistant (v0.9.79).
+//
+// Scope evidence — workbuddy2api-hub #574 single-variable matrix on the CN
+// realm: the identity sentence 400s (11-128) from system/developer/assistant
+// and passes (200) from user; #537's rationale for not touching user/tool:
+// those are user data, and rewriting them desyncs the model's view from what
+// is on disk. This deliberately DIVERGES from sanitizeHistoryPhrasesInPlace
+// (all roles): that pass carries phrases replay-verified to 400 from user
+// messages too (the Web GUI four-token phrase), this one does not.
+//
+// Covered surfaces per message: content (string and array text parts),
+// assistant reasoning_content/reasoning mirrors (scrubbed here so the step
+// 3.5 fold cannot re-arm the family in already-sanitized content), and
+// assistant tool_calls arguments (model-authored text where agents echo
+// protocol and identity prose).
+func sanitizeIdentityInPlace(obj map[string]any) bool {
+	msgs, ok := obj["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		return false
+	}
+	changed := false
+	for _, mi := range msgs {
+		m, ok := mi.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := m["role"].(string)
+		switch strings.ToLower(strings.TrimSpace(role)) {
+		case "system", "developer", "assistant":
+		default:
+			continue
+		}
+		if rc, ok := m["reasoning_content"].(string); ok && rc != "" {
+			if r := sanitizeIdentitySentences(rc); r != rc {
+				m["reasoning_content"] = r
+				changed = true
+			}
+		}
+		if rc, ok := m["reasoning"].(string); ok && rc != "" {
+			if r := sanitizeIdentitySentences(rc); r != rc {
+				m["reasoning"] = r
+				changed = true
+			}
+		}
+		if c, ok := m["content"].(string); ok {
+			if r := sanitizeIdentitySentences(c); r != c {
+				m["content"] = r
+				changed = true
+			}
+		} else if parts, ok := m["content"].([]any); ok {
+			for _, pi := range parts {
+				p, ok := pi.(map[string]any)
+				if !ok {
+					continue
+				}
+				if t, ok := p["text"].(string); ok {
+					if r := sanitizeIdentitySentences(t); r != t {
+						p["text"] = r
+						changed = true
+					}
+				}
+			}
+		}
+		if tcs, ok := m["tool_calls"].([]any); ok {
+			for _, tci := range tcs {
+				tc, ok := tci.(map[string]any)
+				if !ok {
+					continue
+				}
+				fn, ok := tc["function"].(map[string]any)
+				if !ok || fn == nil {
+					continue
+				}
+				if a, ok := fn["arguments"].(string); ok {
+					if r := sanitizeIdentitySentences(a); r != a {
+						fn["arguments"] = r
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	return changed
 }
 
 // forceMaxThinking pins reasoning_effort to "high" for hy3/hy4-family models

@@ -59,12 +59,14 @@ func TestIsChannelRiskControl(t *testing.T) {
 func TestTranslateChatUpstreamError11128Copy(t *testing.T) {
 	err := translateChatUpstreamErrorFull(400, `{"code":11128,"msg":"blocked"}`, nil, nil)
 	msg := err.Error()
-	for _, want := range []string{"11128", "渠道风控", "与账号状态无关"} {
+	// v0.9.79: the copy spells the code hyphenated (11-128) on purpose —
+	// an echo of this very text must not re-arm the content gate.
+	for _, want := range []string{"11-128", "渠道风控", "与账号状态无关", "新开会话"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("msg missing %q: %s", want, msg)
 		}
 	}
-	// 11102 优先级不变（不被 11128/过长改写）
+	// 11102 优先级不变（不被 11-128/过长改写）
 	err2 := translateChatUpstreamErrorFull(400, `{"code":11102,"msg":"model [x] service info not found"}`, nil, nil)
 	if !strings.Contains(err2.Error(), "11102") {
 		t.Errorf("11102 copy lost: %s", err2.Error())

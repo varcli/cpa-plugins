@@ -50,6 +50,23 @@ dashboard.
   account; `finish_reason` from the upstream is passed through unchanged (#36).
 - **Pool rotation + vision honesty** — issue #35 rotation and #37's explicit
   vision-unsupported rejection instead of a silent empty answer.
+- **Chat-plane 401 self-heal** — a 401 renews once and resends once; a 401
+  storm reaches every caller with the session-dead verdict instead of
+  masquerading as a generic failure.
+- **Account-restriction quarantine** — a 403 + 11140 "unusual activity"
+  answer parks only that credential instead of failing the pool.
+- **Credit guardrails (opt-in, #61)** — `reserve_credits` / `daily_credits_cap`
+  keep a scheduler-picked pool from draining an account to zero, reading only
+  the existing credits cache. Default off.
+- **Outbound-identity lane switch (opt-in, #59)** — on an account-level 429 in
+  the CN realm, flip the credential between the CLI and IDE identity families
+  (persisted, capped at 4/day) to drain both quota lanes of a small pool.
+- **Per-credential admission control (opt-in, #60)** — `account_max_concurrent`
+  fails fast once N upstream calls are in flight for one credential, so the host
+  rotates instead of stacking long calls on the same account.
+- **Per-credential model exclusions (#56)** — the auth file's `excluded_models`
+  entry survives typed rebuilds and is applied per credential, with a
+  management API to read/write it.
 - **Split-channel build** — `-ldflags "-X main.providerName=codebuddy-intl"`
   produces a per-variant plugin (own panel entry + auth namespace + pinned
   login realm); the default build stays unified.
@@ -166,6 +183,19 @@ plugins:
       # CPAMP_ADMIN_KEY env vars or docker secret files when unset here.
       usage_report_url: "http://cpa-manager-plus:18317/v0/management/usage/import"
       usage_report_key: ""
+
+      # Opt-in per-credential in-flight chat cap (default 0 = off). At capacity
+      # the executor fails fast so the host rotates to another candidate.
+      account_max_concurrent: 0
+
+      # Opt-in scheduler-pick guardrails (#61), default 0 = off. Both read the
+      # existing credits cache only; per-credential overrides live at the auth
+      # document top level. Only effective with scheduler_mode: credits.
+      reserve_credits: 0
+      daily_credits_cap: 0
+
+      # Opt-in 429 identity-family lane switch (#59), CN realm only.
+      identity_switch_on_429: false
 
       # Advertised model-id namespace (default "workbuddy/", toggle default true).
       # Registered ids become workbuddy/<upstream-id>, e.g. workbuddy/glm-5.2,

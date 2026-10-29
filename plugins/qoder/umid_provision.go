@@ -27,6 +27,16 @@
 // Escape hatches: QD_UMID_BIN (explicit binary) still wins over all of
 // this; QD_UMID_AUTO=0/false/no disables provisioning entirely. Failures
 // fall back to the derived identity and retry after a 6h cooldown.
+//
+// v0.8.66: QD_UMID_REGISTRY overrides the npm registry base (Docker field
+// report — CN deployments often cannot reach registry.npmjs.org directly,
+// which starved the identity bridge and left check-in on the derived
+// fallback). Point it at a trusted mirror, e.g.
+//
+//	QD_UMID_REGISTRY=https://registry.npmmirror.com
+//
+// The URL is the package document endpoint prefix: the plugin appends
+// /@qoder-ai/qodercli to it.
 package main
 
 import (
@@ -50,32 +60,41 @@ import (
 )
 
 const (
-	// umidRegistryURLDefault is the official npm registry location of the
-	// CLI package that embeds the identity bridge components.
-	umidRegistryURLDefault = "https://registry.npmjs.org/@qoder-ai/qodercli"
-	umidBundleMember       = "package/bundle/qoder-worker-runtime.mjs"
-	umidBlobMinChars       = 4000
-	umidBlobSizeMin        = 400 * 1024
-	umidBlobSizeMax        = 2 * 1024 * 1024
-	umidTarballCap         = 80 << 20
-	umidBundleCap          = 64 << 20
-	umidFetchTimeout       = 120 * time.Second
-	umidRetryCooldown      = 6 * time.Hour
-	umidProvisionerUAT     = "cpa-multi-plugins qoder umid-provision"
+	// umidRegistryBaseDefault is the official npm registry base. The
+	// region's package document path is appended (v0.8.67): intl keeps
+	// @qoder-ai/qodercli; CN provisions @qodercn-ai/qoderclicn — Qoder CN's
+	// own CLI. Both packages embed a byte-identical bridge (linux-x64
+	// sha256 e30b307e…, verified 2026-10-23 against both 1.1.77 tarballs;
+	// same member package/bundle/qoder-worker-runtime.mjs), so the split
+	// mirrors which client a CN deployment would itself have used.
+	umidRegistryBaseDefault = "https://registry.npmjs.org"
+	umidPkgIntl             = "/@qoder-ai/qodercli"
+	umidPkgCN               = "/@qodercn-ai/qoderclicn"
+	umidBundleMember        = "package/bundle/qoder-worker-runtime.mjs"
+	umidBlobMinChars        = 4000
+	umidBlobSizeMin         = 400 * 1024
+	umidBlobSizeMax         = 2 * 1024 * 1024
+	umidTarballCap          = 80 << 20
+	umidBundleCap           = 64 << 20
+	umidFetchTimeout        = 120 * time.Second
+	umidRetryCooldown       = 6 * time.Hour
+	umidProvisionerUAT      = "cpa-multi-plugins qoder umid-provision"
 )
 
 var (
 	// umidRegistryURL is a var so tests can point it at a stub server.
-	umidRegistryURL = umidRegistryURLDefault
+	umidRegistryURL = umidRegistryURLFromEnv()
 
 	// umidProvisionRunMu serializes provisioning attempts across regions/
 	// goroutines; umidProvisionStateMu guards the cached outcome below.
 	umidProvisionRunMu sync.Mutex
 
 	umidProvisionStateMu sync.Mutex
-	umidProvisionPath    string    // last successful install (process cache)
-	umidProvisionErr     string    // last failure text ("" when none)
-	umidProvisionAt      time.Time // last attempt (cooldown anchor)
+	// per-region process cache (v0.8.67: CN and intl provision from
+	// different npm packages and must not share cooldowns or installs)
+	umidProvisionPath = map[string]string{}    // last successful install per region
+	umidProvisionErr  = map[string]string{}    // last failure text per region ("" when none)
+	umidProvisionAt   = map[string]time.Time{} // last attempt per region (cooldown anchor)
 
 	// umidHTTPFetch is the single network touchpoint (test stub point).
 	umidHTTPFetch = umidHTTPFetchProd
@@ -83,6 +102,30 @@ var (
 	// umidStateDirOverride is nil in production; tests point it at a t.TempDir.
 	umidStateDirOverride func() string
 )
+
+// umidRegistryURLFromEnv resolves QD_UMID_REGISTRY (v0.8.66): a registry
+// BASE whose package document path mirrors npm's — <base>/@qoder-ai/qodercli
+// (intl) or <base>/@qodercn-ai/qoderclicn (CN), per region. Trailing slashes
+// are trimmed; an empty value keeps the official registry.
+func umidRegistryURLFromEnv() string {
+	v := strings.TrimRight(strings.TrimSpace(os.Getenv("QD_UMID_REGISTRY")), "/")
+	if v == "" {
+		return umidRegistryBaseDefault
+	}
+	if !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") {
+		v = "https://" + v
+	}
+	return v
+}
+
+// umidPackageDocURL builds the region's package document URL (v0.8.67).
+func umidPackageDocURL(region string) string {
+	pkg := umidPkgIntl
+	if normalizeRegion(region) == regionCN {
+		pkg = umidPkgCN
+	}
+	return strings.TrimRight(umidRegistryURL, "/") + pkg
+}
 
 // umidProvisionEnabled reports whether auto-provisioning is on. Default on;
 // QD_UMID_AUTO=0/false/no turns it off (operators who ship their own binary
@@ -95,8 +138,21 @@ func umidProvisionEnabled() bool {
 	return true
 }
 
-// umidProvisionDir is where the plugin keeps its self-provisioned bridge.
-func umidProvisionDir() string {
+// umidProvisionDir is where the plugin keeps its self-provisioned bridge
+// for one region.
+//
+// v0.8.67: per-region subdirectory — the CN and intl legs provision from
+// different npm packages (and may fail independently), so their cooldowns
+// and installs must not share one path.
+func umidProvisionDir(region string) string {
+	sub := "intl"
+	if normalizeRegion(region) == regionCN {
+		sub = "cn"
+	}
+	return filepath.Join(umidProvisionRoot(), sub)
+}
+
+func umidProvisionRoot() string {
 	if umidStateDirOverride != nil {
 		return umidStateDirOverride()
 	}
@@ -107,40 +163,41 @@ func umidProvisionDir() string {
 	return filepath.Join(home, ".cpa-multi-plugins", "umid")
 }
 
-func umidProvisionedExePath() string {
+func umidProvisionedExePath(region string) string {
 	name := "runtime-info"
 	if runtime.GOOS == "windows" {
 		name = "runtime-info.exe"
 	}
-	return filepath.Join(umidProvisionDir(), name)
+	return filepath.Join(umidProvisionDir(region), name)
 }
 
-// umidProvisionLastError returns the last provisioning failure, if any.
-func umidProvisionLastError() string {
+// umidProvisionLastError returns the last provisioning failure for one
+// region, if any.
+func umidProvisionLastError(region string) string {
 	umidProvisionStateMu.Lock()
 	defer umidProvisionStateMu.Unlock()
-	return umidProvisionErr
+	return umidProvisionErr[region]
 }
 
-// provisionedRuntimeInfo returns the plugin-managed official bridge,
-// provisioning it on first use, or "" when unavailable (derived fallback
-// stays in charge). Cached on disk forever and in-process for the lifetime;
-// failed attempts retry after umidRetryCooldown.
-func provisionedRuntimeInfo() string {
+// provisionedRuntimeInfo returns the plugin-managed official bridge for
+// one region, provisioning it on first use, or "" when unavailable (derived
+// fallback stays in charge). Cached on disk forever and in-process for the
+// lifetime; failed attempts retry after umidRetryCooldown (per region).
+func provisionedRuntimeInfo(region string) string {
 	if !umidProvisionEnabled() {
 		return ""
 	}
 	umidProvisionStateMu.Lock()
-	p := umidProvisionPath
+	p := umidProvisionPath[region]
 	umidProvisionStateMu.Unlock()
 	if p != "" {
 		return p
 	}
 	// fast path: a previous run of this binary already provisioned it
-	disk := umidProvisionedExePath()
+	disk := umidProvisionedExePath(region)
 	if st, err := os.Stat(disk); err == nil && !st.IsDir() && st.Size() > umidBlobSizeMin {
 		umidProvisionStateMu.Lock()
-		umidProvisionPath = disk
+		umidProvisionPath[region] = disk
 		umidProvisionStateMu.Unlock()
 		return disk
 	}
@@ -150,26 +207,26 @@ func provisionedRuntimeInfo() string {
 	// re-check under the run lock: a concurrent attempt may have finished
 	if st, err := os.Stat(disk); err == nil && !st.IsDir() && st.Size() > umidBlobSizeMin {
 		umidProvisionStateMu.Lock()
-		umidProvisionPath = disk
-		umidProvisionErr = ""
+		umidProvisionPath[region] = disk
+		umidProvisionErr[region] = ""
 		umidProvisionStateMu.Unlock()
 		return disk
 	}
 	umidProvisionStateMu.Lock()
-	if !umidProvisionAt.IsZero() && time.Since(umidProvisionAt) < umidRetryCooldown {
+	if at := umidProvisionAt[region]; !at.IsZero() && time.Since(at) < umidRetryCooldown {
 		umidProvisionStateMu.Unlock()
 		return ""
 	}
 	umidProvisionStateMu.Unlock()
 
-	exe, err := provisionUmidBridge()
+	exe, err := provisionUmidBridge(region)
 	umidProvisionStateMu.Lock()
-	umidProvisionAt = time.Now()
+	umidProvisionAt[region] = time.Now()
 	if err != nil {
-		umidProvisionErr = err.Error()
+		umidProvisionErr[region] = err.Error()
 	} else {
-		umidProvisionErr = ""
-		umidProvisionPath = exe
+		umidProvisionErr[region] = ""
+		umidProvisionPath[region] = exe
 	}
 	umidProvisionStateMu.Unlock()
 	if err != nil {
@@ -408,12 +465,12 @@ func selectUmidBlob(blobs [][]byte, want string) []byte {
 }
 
 // installUmidBridge atomically writes the component and marks it executable.
-func installUmidBridge(data []byte) (string, error) {
-	dir := umidProvisionDir()
+func installUmidBridge(data []byte, region string) (string, error) {
+	dir := umidProvisionDir(region)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	target := umidProvisionedExePath()
+	target := umidProvisionedExePath(region)
 	tmp := target + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o755); err != nil {
 		return "", err
@@ -430,12 +487,12 @@ func installUmidBridge(data []byte) (string, error) {
 }
 
 // provisionUmidBridge runs the full extraction pipeline once.
-func provisionUmidBridge() (string, error) {
+func provisionUmidBridge(region string) (string, error) {
 	want := umidBlobLabelFor(runtime.GOOS, runtime.GOARCH)
 	if want == "" {
 		return "", fmt.Errorf("no official identity bridge component for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
-	metaBody, err := umidHTTPFetch(umidRegistryURL, umidFetchTimeout)
+	metaBody, err := umidHTTPFetch(umidPackageDocURL(region), umidFetchTimeout)
 	if err != nil {
 		return "", fmt.Errorf("npm registry: %w", err)
 	}
@@ -458,5 +515,5 @@ func provisionUmidBridge() (string, error) {
 	if blob == nil {
 		return "", fmt.Errorf("official bundle carries no %s component", want)
 	}
-	return installUmidBridge(blob)
+	return installUmidBridge(blob, region)
 }

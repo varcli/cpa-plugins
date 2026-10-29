@@ -84,6 +84,11 @@ func isHardCreditError(status int, body string) bool {
 		return true
 	}
 	lower := strings.ToLower(body)
+	// The provider's workspace allocation limit does not establish that the
+	// Qoder account has run out of credits.
+	if strings.Contains(lower, "workspace allocated quota exceeded") {
+		return false
+	}
 	for _, m := range hardCreditMarkers {
 		if strings.Contains(lower, strings.ToLower(m)) {
 			return true
@@ -210,6 +215,15 @@ func upstreamStatusError(status int, err error) error {
 // for one flaky model.
 func emptyStreamError() error {
 	return fmt.Errorf("empty_stream: qoder upstream closed before a completion payload (unexpected EOF)")
+}
+
+// truncatedStreamError is the half-answer twin of emptyStreamError: the upstream
+// answered, then stopped before any finish_reason/[DONE]. Same transport
+// lifecycle wording, so the classifier must not cool a credential that is
+// perfectly healthy; the difference is that frames were already delivered, and
+// without this the client would take the partial text as the model's last word.
+func truncatedStreamError() error {
+	return fmt.Errorf("truncated_stream: qoder upstream ended without finish_reason (unexpected EOF)")
 }
 
 // upstreamReadError renders a mid-stream read failure with the same
@@ -348,15 +362,19 @@ func displayNoteWithPrev(sa *storedAuth, cr *creditsSummary, disabled bool, prev
 	return note
 }
 
-// labelForAuth adds [CN] for host labels.
+// labelForAuth tags the host label with the account's real region.
+// v0.8.66: the tag was hardcoded "CN" (a leftover tautology `if "cn" == "global"`
+// from the pre-merge separate-plugin era) — every Intl account rendered as
+// "nickname [CN]" in the host's auth list, actively misleading region diagnosis
+// ("我的国际账号怎么显示 CN？签到是不是走错端点了？").
 func labelForAuth(sa *storedAuth) string {
 	base := "QoderWork"
 	if sa != nil && strings.TrimSpace(sa.Account.Nickname) != "" {
 		base = strings.TrimSpace(sa.Account.Nickname)
 	}
 	tag := "CN"
-	if "cn" == "global" {
-		tag = "CN"
+	if sa != nil && authRegion(sa) == regionIntl {
+		tag = "Intl"
 	}
 	return base + " [" + tag + "]"
 }

@@ -122,6 +122,10 @@ func configure(raw []byte) {
 	// v0.13.0: not sticky — an absent key means the default (workbuddy/ + on).
 	nextModelPrefix := defaultModelPrefix
 	nextModelPrefixEnabled := true
+	nextAccountMaxConcurrent := 0   // default off: admission control disabled
+	nextReserveCredits := int64(0)  // default off: guardrail disabled (#61)
+	nextDailyCreditsCap := int64(0) // default off: guardrail disabled (#61)
+	nextIdentitySwitchOn := false   // default off: 429 lane switch disabled (#59)
 
 	nextPinned := map[string][]string{}
 	cfgURL, cfgKey := "", ""
@@ -184,6 +188,24 @@ func configure(raw []byte) {
 					if n, err := strconv.Atoi(configScalarString(v)); err == nil && n > 0 {
 						nextStreamHeadTimeout = n
 					}
+				}
+				if v, present := m["account_max_concurrent"]; present {
+					if n, err := strconv.Atoi(configScalarString(v)); err == nil && n > 0 {
+						nextAccountMaxConcurrent = n
+					}
+				}
+				if v, present := m["reserve_credits"]; present {
+					if n, err := strconv.ParseInt(configScalarString(v), 10, 64); err == nil && n > 0 {
+						nextReserveCredits = n
+					}
+				}
+				if v, present := m["daily_credits_cap"]; present {
+					if n, err := strconv.ParseInt(configScalarString(v), 10, 64); err == nil && n > 0 {
+						nextDailyCreditsCap = n
+					}
+				}
+				if v, present := m["identity_switch_on_429"]; present {
+					nextIdentitySwitchOn = configScalarBool(v)
 				}
 			}
 			for _, line := range strings.Split(string(req.ConfigYAML), "\n") {
@@ -259,6 +281,35 @@ func configure(raw []byte) {
 					v = strings.Trim(v, "\"'")
 					nextModelPrefixEnabled = v == "true" || v == "1" || v == "yes" || v == "on"
 				}
+				if strings.HasPrefix(line, "account_max_concurrent:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "account_max_concurrent:"))
+					v = strings.Trim(v, "\"'")
+					// Opt-in only: same normalization as stream_head_timeout —
+					// absent, unparseable or non-positive all mean disabled.
+					if n, err := strconv.Atoi(v); err == nil && n > 0 {
+						nextAccountMaxConcurrent = n
+					}
+				}
+				if strings.HasPrefix(line, "reserve_credits:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "reserve_credits:"))
+					v = strings.Trim(v, "\"'")
+					// Opt-in only (#61): non-positive normalizes to disabled.
+					if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+						nextReserveCredits = n
+					}
+				}
+				if strings.HasPrefix(line, "daily_credits_cap:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "daily_credits_cap:"))
+					v = strings.Trim(v, "\"'")
+					if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+						nextDailyCreditsCap = n
+					}
+				}
+				if strings.HasPrefix(line, "identity_switch_on_429:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "identity_switch_on_429:"))
+					v = strings.Trim(v, "\"'")
+					nextIdentitySwitchOn = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
 				if strings.HasPrefix(line, "models_cn:") {
 					if ids := parsePinnedModelList(strings.TrimPrefix(line, "models_cn:")); len(ids) > 0 {
 						nextPinned["cn"] = ids
@@ -333,6 +384,50 @@ func configure(raw []byte) {
 	streamHeadTimeoutMu.Lock()
 	streamHeadTimeout = nextStreamHeadTimeout
 	streamHeadTimeoutMu.Unlock()
+
+	accountMaxConcurrentMu.Lock()
+	if accountMaxConcurrent != nextAccountMaxConcurrent {
+		if nextAccountMaxConcurrent > 0 {
+			log.Printf("workbuddy: account_max_concurrent=%d applied (per-credential in-flight admission)", nextAccountMaxConcurrent)
+		} else {
+			log.Printf("workbuddy: account_max_concurrent admission disabled")
+		}
+	}
+	accountMaxConcurrent = nextAccountMaxConcurrent
+	accountMaxConcurrentMu.Unlock()
+
+	reserveCreditsMu.Lock()
+	if reserveCredits != nextReserveCredits {
+		if nextReserveCredits > 0 {
+			log.Printf("workbuddy: reserve_credits=%d applied (scheduler pick guardrail, #61)", nextReserveCredits)
+		} else {
+			log.Printf("workbuddy: reserve_credits guardrail disabled")
+		}
+	}
+	reserveCredits = nextReserveCredits
+	reserveCreditsMu.Unlock()
+
+	dailyCreditsCapMu.Lock()
+	if dailyCreditsCap != nextDailyCreditsCap {
+		if nextDailyCreditsCap > 0 {
+			log.Printf("workbuddy: daily_credits_cap=%d applied (UTC+8 day, scheduler pick guardrail, #61)", nextDailyCreditsCap)
+		} else {
+			log.Printf("workbuddy: daily_credits_cap guardrail disabled")
+		}
+	}
+	dailyCreditsCap = nextDailyCreditsCap
+	dailyCreditsCapMu.Unlock()
+
+	identitySwitchMu.Lock()
+	if identitySwitchOn != nextIdentitySwitchOn {
+		if nextIdentitySwitchOn {
+			log.Printf("workbuddy: identity_switch_on_429 applied (sticky outbound-family lane switch on account-level 429, CN realm, %d/day per credential) (#59)", identitySwitchDailyCap)
+		} else {
+			log.Printf("workbuddy: identity_switch_on_429 disabled")
+		}
+	}
+	identitySwitchOn = nextIdentitySwitchOn
+	identitySwitchMu.Unlock()
 
 	// management key: config_yaml > env > keep existing. Empty stays empty
 	// (plugin-layer auth disabled, host middleware still guards).

@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -83,6 +84,49 @@ func TestParseQueueSignalObservedThreeLayerTicket(t *testing.T) {
 	}
 }
 
+func TestParseQueueSignalCallCountLimitMetadata(t *testing.T) {
+	// The observed CALL_COUNT_LIMIT ticket carries its metadata below the
+	// 10605 envelope, without repeating that code in the innermost object.
+	ticket := strings.ReplaceAll(queueTicketL3(), "RESOURCE_LIMIT", "CALL_COUNT_LIMIT")
+	ticket = strings.Replace(ticket, `"retryAfterSeconds":30`, `"retryAfterSeconds":17`, 1)
+	business := `{"code":"10605","message":` + strconv.Quote(ticket) + `,"subCode":"CALL_COUNT_LIMIT"}`
+	for _, carrier := range []string{"message", "details"} {
+		t.Run(carrier, func(t *testing.T) {
+			body := `{"code":403,"` + carrier + `":` + strconv.Quote(business) + `}`
+			sig := parseQueueSignal(body)
+			if !sig.detected || sig.retryAfter != 17*time.Second || sig.modelKey != "qfmodel" || sig.queueType != "p3" {
+				t.Fatalf("CALL_COUNT_LIMIT metadata lost: %+v", sig)
+			}
+			line := queueLimitLine(sig)
+			if !strings.Contains(line, "subCode=CALL_COUNT_LIMIT") || strings.Contains(line, "RESOURCE_LIMIT") || strings.Contains(line, "与账号无关") {
+				t.Fatalf("queue line must preserve the upstream cause: %s", line)
+			}
+		})
+	}
+}
+
+func TestParseQueueSignalIgnoresUnrelatedSiblingMetadata(t *testing.T) {
+	business := strings.ReplaceAll(queueTicketL2(), "RESOURCE_LIMIT", "CALL_COUNT_LIMIT")
+	sibling := `{"subCode":"UNRELATED","retryAfterSeconds":1,"modelKey":"other","queueType":"other"}`
+	body := `{"code":403,"message":` + strconv.Quote(business) + `,"details":` + strconv.Quote(sibling) + `}`
+	line := queueLimitLine(parseQueueSignal(body))
+	for _, want := range []string{"subCode=CALL_COUNT_LIMIT", "model=qfmodel", "队列=p3"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("queue metadata missing %q: %s", want, line)
+		}
+	}
+	if sig := parseQueueSignal(body); sig.retryAfter != 30*time.Second {
+		t.Fatalf("unrelated sibling replaced queue retry interval: %v", sig.retryAfter)
+	}
+}
+
+func TestQueueLimitLineDoesNotInventSubCode(t *testing.T) {
+	line := queueLimitLine(parseQueueSignal(`{"code":"10605"}`))
+	if strings.Contains(line, "subCode=") || strings.Contains(line, "RESOURCE_LIMIT") || strings.Contains(line, "与账号无关") {
+		t.Fatalf("queue line invented a cause absent from the ticket: %s", line)
+	}
+}
+
 func TestParseQueueSignalDirectTopLevelTicket(t *testing.T) {
 	// The HTTP layer may hand back the business envelope without the 403
 	// wrapper, and older gateways may emit the code as a number.
@@ -130,6 +174,7 @@ func TestParseQueueSignalRejectsNonQueueBodies(t *testing.T) {
 		`{"code":"4001","message":"tool orphan"}`,
 		`{"error":{"message":"free quota exhausted"}}`,
 		`{"code":403,"message":"plain forbidden text"}`,
+		`{"subCode":"CALL_COUNT_LIMIT","retryAfterSeconds":17}`,
 	} {
 		if sig := parseQueueSignal(body); sig.detected {
 			t.Fatalf("non-queue body must not be detected: %s", body)
@@ -142,7 +187,7 @@ func TestParseQueueSignalRejectsNonQueueBodies(t *testing.T) {
 func TestQueueLimitLineCarriesMarkerAndGuidance(t *testing.T) {
 	sig := parseQueueSignal(queueTicketL1())
 	line := queueLimitLine(sig)
-	for _, want := range []string{queueMarker, "code=10605", "RESOURCE_LIMIT", "qfmodel", "p3", "与账号无关", "上游整体饱和"} {
+	for _, want := range []string{queueMarker, "code=10605", "RESOURCE_LIMIT", "qfmodel", "p3", "上游排队或受限", "等待后重试"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("queue line missing %q: %s", want, line)
 		}
@@ -224,6 +269,82 @@ func TestQueueWaitRespectsContextCancellation(t *testing.T) {
 	cancel()
 	if queueWaitFn(ctx, time.Second) {
 		t.Fatal("a cancelled context must interrupt the wait")
+	}
+}
+
+func TestQueueWaitBudgetConfig(t *testing.T) {
+	t.Cleanup(func() {
+		queueBudgetMu.Lock()
+		queueWaitBudget = queueTotalBudget
+		queueBudgetMu.Unlock()
+	})
+	for _, tc := range []struct {
+		yaml string
+		want time.Duration
+	}{
+		{"queue_wait_budget: 30", 30 * time.Second},
+		{`{"queue_wait_budget": "0"}`, 0},
+		{"checkin_auto: false", queueTotalBudget},
+	} {
+		raw, _ := json.Marshal(map[string]any{"config_yaml": []byte(tc.yaml)})
+		if err := configure(raw); err != nil {
+			t.Fatal(err)
+		}
+		if queueWaitBudget != tc.want {
+			t.Fatalf("configure(%q): budget=%v, want %v", tc.yaml, queueWaitBudget, tc.want)
+		}
+	}
+	for _, value := range []string{"-1", "151", "30s", "null", "true"} {
+		raw, _ := json.Marshal(map[string]any{"config_yaml": []byte("queue_wait_budget: " + value)})
+		if _, err := handleMethod("plugin.reconfigure", raw); err == nil {
+			t.Fatalf("invalid queue_wait_budget %q must fail reconfigure", value)
+		}
+		if queueWaitBudget != queueTotalBudget {
+			t.Fatal("invalid configuration must not change the active budget")
+		}
+	}
+}
+
+func TestPumpConfiguredQueueBudgetStopsWithError(t *testing.T) {
+	for _, budget := range []time.Duration{0, 30 * time.Second} {
+		t.Run(budget.String(), func(t *testing.T) {
+			queueBudgetMu.Lock()
+			queueWaitBudget = budget
+			queueBudgetMu.Unlock()
+			t.Cleanup(func() {
+				queueBudgetMu.Lock()
+				queueWaitBudget = queueTotalBudget
+				queueBudgetMu.Unlock()
+			})
+			waits := installFastQueueWait(t)
+			rec := installStreamSinks(t)
+			srv, hits := queueCountingServer(t, 1<<30, http.StatusForbidden, queueTicketL1())
+			done := startPump(srv.URL, nil)
+			rec.waitFor(t, 1)
+			mustFinish(t, done)
+			wantRetries := int(budget / queueWaitDefault)
+			if int(atomic.LoadInt32(hits)) != wantRetries+1 || len(*waits) != wantRetries {
+				t.Fatalf("budget %v: hits=%d waits=%v", budget, atomic.LoadInt32(hits), *waits)
+			}
+			if len(rec.inBand()) != 1 || !strings.Contains(rec.inBand()[0], queueMarker) {
+				t.Fatalf("expected one queue error, got %q", rec.inBand())
+			}
+			if len(rec.delivered()) != 0 {
+				t.Fatalf("queue failure must not emit answer/completion chunks: %q", rec.delivered())
+			}
+		})
+	}
+}
+
+func TestWorkspaceQuotaIsNotAccountCreditExhaustion(t *testing.T) {
+	body := `{"error":{"code":429,"message":"Workspace allocated quota exceeded"}}`
+	for _, status := range []int{0, 200, 429} {
+		if isHardCreditError(status, body) {
+			t.Fatalf("workspace quota must not count as account credit exhaustion (status %d)", status)
+		}
+	}
+	if !isHardCreditError(402, body) || !isHardCreditError(429, "Insufficient credits") {
+		t.Fatal("explicit payment/credit failures must retain their classification")
 	}
 }
 

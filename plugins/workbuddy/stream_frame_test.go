@@ -109,7 +109,7 @@ func TestBackendHeaders_IDEDefaultFillsBlankOnly(t *testing.T) {
 	cli := &storedAuth{Auth: storedTokens{AccessToken: "at", Domain: "copilot.tencent.com"}}
 	req := &http.Request{Header: http.Header{}}
 	backendHeaders(req, cli)
-	if req.Header.Get("X-IDE-Name") != "WorkBuddy" || req.Header.Get("X-IDE-Type") != "WorkBuddy" || req.Header.Get("X-IDE-Version") != "5.5.6" {
+	if req.Header.Get("X-IDE-Name") != "WorkBuddy" || req.Header.Get("X-IDE-Type") != "WorkBuddy" || req.Header.Get("X-IDE-Version") != desktopClientVersion {
 		t.Fatalf("CLI-login CN account must carry the WorkBuddy identity, got %v", req.Header)
 	}
 

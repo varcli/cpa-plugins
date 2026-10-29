@@ -179,6 +179,20 @@ func billingHeaders(req *http.Request, sa *storedAuth) {
 	if sa.Auth.Domain != "" {
 		req.Header.Set("X-Domain", sa.Auth.Domain)
 	}
+	// 2026-10-25 (per-account billing identity): the billing plane is where
+	// N gateway-fronted accounts would otherwise present zero device
+	// separation — one gateway shape on every call from every account. The
+	// official non-chat family carries X-Machine-ID (OS hardware UUID) /
+	// X-Session-ID (per-process UUID) plus a fresh X-Request-ID per call, so
+	// a gateway derives the two stable ids per account — same account always
+	// the same device, never shared across accounts — or the shared value
+	// becomes a correlation key tying the whole pool to one machine
+	// (workbuddy2api-hub wb_accounts.py / wb_fingerprint.py, its #448).
+	// Shapes: hyphenated UUIDv4 for the stable ids (deriveAccountDeviceID),
+	// bare 32-hex for the request id (accountRequestID).
+	req.Header.Set("X-Machine-ID", deriveAccountDeviceID(sa, "machine"))
+	req.Header.Set("X-Session-ID", deriveAccountDeviceID(sa, "session"))
+	req.Header.Set("X-Request-ID", accountRequestID())
 	req.Header.Set("User-Agent", "CodeBuddy")
 	// Intl realm parity (applyRealmHeaders): the codebuddy.ai gateway expects
 	// the IDE client header set and no X-Requested-With. Without these the
@@ -195,9 +209,21 @@ func billingHeaders(req *http.Request, sa *storedAuth) {
 func billingCall(sa *storedAuth, path string, body any) (json.RawMessage, error) {
 	data, err := billingCallOnce(sa, path, body, 0)
 	attempts := 1
+	all5xx := is5xxBillingErr(err)
 	for _, d := range billingRetryDelays {
 		if err == nil || !isTransientBillingErr(err) {
 			break
+		}
+		// v0.9.65: a connection-level failure (EOF / reset / TLS-class) on the
+		// just-used dial path demotes the cached-good IP before the next
+		// attempt. Poisoned DNS answers and dead CDN edges accept TCP and kill
+		// the TLS flight — and without the demotion the dialer's own
+		// "winning"-IP stickiness re-dials the same broken edge on every
+		// remaining attempt, burning the whole ladder on one dead IP while
+		// healthy candidates sit unused right behind it (2026-10-23 field
+		// report: 4/4 attempts tls=EOF on the same sys-DNS IP).
+		if isConnLevelBillingErr(err) {
+			billingDemoteGoodIP(billingBaseFor(sa))
 		}
 		time.Sleep(d)
 		// Retry ladder (v0.9.52): attempt 1 and 3 run on the rescue transport
@@ -210,6 +236,32 @@ func billingCall(sa *storedAuth, path string, body any) (json.RawMessage, error)
 		// config and the plugin hasn't seen a HostConfigSummary yet.
 		data, err = billingCallOnce(sa, path, body, attempts)
 		attempts++
+		all5xx = all5xx && is5xxBillingErr(err)
+	}
+	// 0.9.68 (magpie packages/workbuddy 0.1.31 parity): a billing 401 gets
+	// ONE token renewal and ONE resend, whatever the token's clock says.
+	// The keepalive refresh keeps offline sessions alive on its own schedule;
+	// a session that died between keepalive ticks used to surface as a hard
+	// failure on every billing call until the next daily cycle.
+	if err != nil && is401BillingRejection(err) {
+		fresh, rerr := billing401RenewOnce(sa)
+		switch {
+		case rerr == nil && fresh != nil:
+			data, err = billingCallOnce(fresh, path, body, 0)
+			if err == nil {
+				return data, nil
+			}
+			if is401BillingRejection(err) {
+				err = fmt.Errorf("%w — renewed once and still refused: re-login required", err)
+			}
+		case isBilling401SessionDead(rerr):
+			err = fmt.Errorf("%w — refresh token refused (session dead): re-login required", err)
+		default:
+			// Throttled / snapshot without host identity / no refresh token /
+			// renewal failed for another reason: keep the plain 401 shape —
+			// the next cycle retries the heal, or a concurrent renewal has
+			// already refreshed the credential for callers that re-read it.
+		}
 	}
 	if err != nil && isTransientBillingErr(err) {
 		// Transport-class exhaustion: keep the underlying error first (its
@@ -225,6 +277,15 @@ func billingCall(sa *storedAuth, path string, body any) (json.RawMessage, error)
 		// connections (a poisoned pooled conn would otherwise serve the
 		// next billing call straight from the pool).
 		billingResetDialState()
+		if all5xx {
+			// v0.9.65: every attempt got an HTTP answer back — the gateway is
+			// REACHABLE; it (or a service behind it) is failing. Reporting
+			// "unreachable" here sent a 2026-10-23 field report chasing local
+			// network/proxy causes while the net-diag in the very same line
+			// showed http=200 on direct probes: the failure was upstream
+			// (code 10000, the billing gateway's internal keycloak call).
+			return data, fmt.Errorf("%w — billing gateway answered HTTP 5xx on all %d attempts (upstream internal error: the gateway itself or a service behind it is failing — server-side, not a local network problem; the next scheduled check-in retries automatically)%s", err, attempts, billingNetDiagSuffix(billingBaseFor(sa)))
+		}
 		return data, fmt.Errorf("%w — billing gateway unreachable after %d attempts (direct pooled+rescue fresh-conn/v4 and host-bridge paths; set proxy-url in CPA config.yaml or HTTPS_PROXY on the host process if codebuddy.ai/workbuddy.ai needs a proxy from this network)%s", err, attempts, billingNetDiagSuffix(billingBaseFor(sa)))
 	}
 	return data, err
@@ -243,27 +304,119 @@ func isTransientBillingErr(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	if strings.HasPrefix(msg, "http 5") || strings.HasPrefix(msg, "http=5") || strings.Contains(msg, "status 5") {
+	if is5xxBillingErr(err) {
 		return true
 	}
-	transport := []string{
-		": EOF",                     // Go http client: server closed without a response
-		"connection reset",          // TCP RST mid-request
-		"broken pipe",               // write after peer closed
-		"Client.Timeout",            // http.Client Timeout exceeded
-		"context deadline exceeded", // per-request ctx budget (host bridge too)
-		"TLS handshake timeout",     // net/http handshake dial
-		"i/o timeout",               // dial/read deadline
-		"no such host",              // DNS miss (transient resolver flaps)
-		"connection refused",        // listener temporarily down
+	// Application-layer answers first: the server SPOKE — a business code or a
+	// non-JSON body came back with a non-5xx status. These are never transport
+	// failures, even when the upstream's own error text embeds transport-shaped
+	// substrings (2026-10-23 field report: code 10000's msg contains
+	// `Get "http://keycloak-cluster-alias/...": EOF` — the server's INTERNAL
+	// call failed; our transport worked and must not be retried as if it
+	// hadn't).
+	if isAppLayerBillingErr(err) {
+		return false
 	}
-	for _, pat := range transport {
+	// 0.9.74: a connection-level death is retryable BY DEFINITION. The two
+	// hand-kept lists drifted apart once already — 0.9.66 added
+	// "server closed idle connection" / "unexpected EOF" to the conn-level
+	// demotion list but not here, so a pooled keep-alive conn the peer cut
+	// escaped the ladder as a one-shot error instead of riding it (the exact
+	// escape class 0.9.66's comment promised to close; CI flake reproduced
+	// 2026-10-26 under -race when a hermetic test port got reused and the
+	// pooled transport handed the ladder the stale conn first). Transient now
+	// derives from conn-level — the single source of truth — so the lists
+	// cannot drift again.
+	if isConnLevelBillingErr(err) {
+		return true
+	}
+	// Resolver / listener failures are retry-worthy (the next attempt may
+	// land on a different edge or the listener may be back) but NOT
+	// demote-worthy: there is no dialed IP to blame for a DNS miss or a
+	// refused SYN, so they stay out of the conn-level list.
+	resolver := []string{
+		"no such host",       // DNS miss (transient resolver flaps)
+		"connection refused", // listener temporarily down
+	}
+	for _, pat := range resolver {
+		if strings.Contains(msgOf(err), pat) {
+			return true
+		}
+	}
+	return false
+}
+
+// isAppLayerBillingErr reports whether err is an application-layer answer
+// (business code envelope, non-JSON body parse failure, or credential-level
+// gateway rejection) — shapes produced only after the transport succeeded.
+func isAppLayerBillingErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := msgOf(err)
+	return strings.HasPrefix(msg, "code=") ||
+		strings.HasPrefix(msg, "parse failed:") ||
+		strings.HasPrefix(msg, "credential rejected")
+}
+
+// is5xxBillingErr reports whether err is the upstream-5xx shape produced by
+// billingCallOnce ("http 500 from ...") or the growth HTTP error family —
+// the server ANSWERED, it just answered badly. Retryable, but fundamentally
+// different from a transport failure: the network path is fine.
+func is5xxBillingErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := msgOf(err)
+	return strings.HasPrefix(msg, "http 5") || strings.HasPrefix(msg, "http=5") || strings.Contains(msg, "status 5")
+}
+
+// isConnLevelBillingErr reports whether err means the connection itself died
+// (EOF / reset / TLS-class / IO-timeout) rather than the server answering
+// (5xx — reachable, server-side) or the resolver failing. The retry ladder
+// uses it to demote the cached-good dial IP: a TCP-good-but-TLS-dead edge
+// produces exactly these errors, and re-dialing it on every retry burns the
+// whole ladder on one broken candidate.
+func isConnLevelBillingErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if is5xxBillingErr(err) {
+		return false
+	}
+	// Application-layer answers (business code / parse failure / credential
+	// rejection) reached us over a working transport — never conn-level, even
+	// if the upstream's own error text embeds transport-shaped substrings.
+	if isAppLayerBillingErr(err) {
+		return false
+	}
+	msg := msgOf(err)
+	for _, pat := range []string{
+		": EOF",
+		"server closed idle connection", // Go transport: pooled keep-alive conn cut by the peer (CDN/EdgeOne idle reaping) — 0.9.66, CI flake 2026-10-23
+		"unexpected EOF",                // truncated response body mid-read — same transport class
+		"connection reset",
+		"forcibly closed", // Windows winsock reset wording (WSAECONNRESET): "An existing connection was forcibly closed by the remote host"
+		"broken pipe",
+		"TLS handshake timeout",
+		"tls:", // tls: handshake failure / cert verification / record-layer errors
+		"i/o timeout",
+		"Client.Timeout",
+		"context deadline exceeded",
+	} {
 		if strings.Contains(msg, pat) {
 			return true
 		}
 	}
 	return false
+}
+
+// msgOf renders err's message without a nil-pointer dance at every caller.
+func msgOf(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // billingCallOnce performs one billing HTTP attempt. attempt 0 uses the pooled
@@ -613,10 +766,32 @@ func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 		}
 	}
 	_ = resp.Response.Data.TotalCount
+	// v0.9.67 (issue #55): an enterprise-space account answers the personal
+	// meter plane with HTTP 200 + EMPTY data (TotalCount 0, Accounts null) —
+	// not an error — and folding that into a zero summary made the panel read
+	// "余0 已用0 · free" for an account holding a live enterprise allowance,
+	// and kept a disabled one from ever re-enabling (shouldReenableCN wants
+	// TotalRemain > 0). Enterprise accounts with empty personal data fall back
+	// to the enterprise meter plane; a personal account's genuinely-empty
+	// result (no packs yet) never enters the fallback.
+	if len(resp.Response.Data.Accounts) == 0 && isEnterpriseAccount(sa) {
+		if u, uerr := fetchEnterpriseUsage(sa); uerr == nil {
+			return u.creditsSummary(), nil
+		}
+		// Both planes came back empty: report unknown (nil) rather than a
+		// zero summary — "no data" must not render as "exhausted".
+		return nil, fmt.Errorf("enterprise account: personal meter empty and enterprise usage unavailable")
+	}
 	return sum, nil
 }
 
 func fetchPaymentType(sa *storedAuth) string {
+	// v0.9.67 (issue #55): an enterprise account is not on the personal
+	// payment ladder — get-payment-type answers "free" there, which the panel
+	// used to render as the plan. Name the plane for what it is.
+	if isEnterpriseAccount(sa) {
+		return "enterprise"
+	}
 	data, err := billingCall(sa, "/v2/billing/meter/get-payment-type", nil)
 	if err != nil {
 		return ""
@@ -632,6 +807,13 @@ func fetchPaymentType(sa *storedAuth) string {
 }
 
 func performCheckinCall(sa *storedAuth) (map[string]any, error) {
+	// v0.9.67 (issue #55): the daily-checkin plane rejects enterprise
+	// accounts with 400 biz 10001 "企业账号不支持该操作" (and their
+	// checkin-activity-status reads active:false). Short-circuit the manual
+	// press with the reason instead of a doomed upstream call.
+	if isEnterpriseAccount(sa) {
+		return enterpriseCheckinRefusal(), nil
+	}
 	data, err := billingCall(sa, "/v2/billing/meter/daily-checkin", nil)
 	if err != nil {
 		// billingCall returns business errors (code != 0) as Go errors; surface

@@ -78,6 +78,7 @@ CGO_ENABLED=1 go build -buildmode=c-shared -o qoder.so .   # windows 下 -o qode
 | `model_prefix` | string | 注册模型 ID 前缀（默认 `qoder/`），缺尾斜杠自动补 |
 | `enable_model_prefix` | bool | 是否加前缀（默认 true）。关闭后使用裸上游 ID |
 | `claim_unverified` | bool | 是否代领「面值不可核实」的签到行（默认 false） |
+| `queue_wait_budget` | int | 10605 `RESOURCE_LIMIT` 排队票据的累计等待预算，0–150 秒（默认 150）。`0` 关闭排队重试；单次等待上限 45 秒、最多 3 轮仍生效。不限制网络与生成耗时 |
 | `stream_head_timeout` | int | 流式首包门超时秒数，0 = 关闭（默认） |
 | `usage_report_url` | string | CPAMP usage 上报地址覆盖（也可用 env `USAGE_REPORT_URL`） |
 | `usage_report_key` | string | CPAMP admin key 覆盖（优先 env / secret 文件自动探测） |

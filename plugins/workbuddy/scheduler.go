@@ -8,6 +8,7 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"strings"
 	"sync"
 
@@ -76,19 +77,41 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 	// routing uses. The request model is resolved through the same alias
 	// table the executors use so the key matches the recorded pair.
 	reqModel := resolveUpstreamModel(req.Model, nil)
+	sawWorkbuddy := false
 	for _, c := range req.Candidates {
 		if c.Provider != providerName {
 			continue
 		}
+		sawWorkbuddy = true
 		if candidateDisabled(c) {
 			continue
 		}
 		if reqModel != "" && modelIsCooling(c.ID, reqModel) {
 			continue
 		}
+		// v0.9.73: account-restriction quarantine (403+11140) — a restricted
+		// credential is not offered as a candidate either, same invisibility
+		// contract as the guardrails: the host just sees fewer candidates.
+		if accountRestrictionCooling(c.ID) {
+			continue
+		}
+		// #61 guardrails: a guarded credential is simply not offered as a
+		// candidate — invisible to the host, no retry budget consumed. Only
+		// evaluated here (pick time): admission (#60) owns runtime capacity,
+		// guardrails own balance. When every candidate is guarded the pick
+		// defers to the host below like any empty-candidate case.
+		if guardSkipCredential(c.ID) {
+			continue
+		}
 		wbCandidates = append(wbCandidates, c)
 	}
 	if len(wbCandidates) == 0 {
+		if sawWorkbuddy && (loadedReserveCredits() > 0 || loadedDailyCreditsCap() > 0) {
+			log.Printf("workbuddy: scheduler pick deferred — all %s candidates withheld by credit guardrails (reserve/daily-cap)", providerName)
+		}
+		if sawWorkbuddy && restrictionQuarantineCount() > 0 {
+			log.Printf("workbuddy: scheduler pick deferred — all %s candidates quarantined by upstream account restriction (403+11140)", providerName)
+		}
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
 
