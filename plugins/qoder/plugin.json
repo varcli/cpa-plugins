@@ -8,30 +8,30 @@
       {
         "goarch": "amd64",
         "goos": "linux",
-        "sha256": "a34bf1277189c49e549e66ce04829882d3c51e33e2e094b49dfb510730b43f99",
-        "size": 4483991,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.10.0/qoder_0.10.0_linux_amd64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.11.0/qoder_0.11.0_linux_amd64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "linux",
-        "sha256": "1b982662c184af745ee1ff82ff8d6e751abbb2aec4bac5f0e2fb90148dfff536",
-        "size": 4089526,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.10.0/qoder_0.10.0_linux_arm64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.11.0/qoder_0.11.0_linux_arm64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "darwin",
-        "sha256": "d59f2d761af1d8cc9502817e379509b403c85b0782bf9dce0bcf136cb9d0b875",
-        "size": 3943222,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.10.0/qoder_0.10.0_darwin_arm64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.11.0/qoder_0.11.0_darwin_arm64.zip"
       },
       {
         "goarch": "amd64",
         "goos": "windows",
-        "sha256": "e3424ef1119cd7323e454e53592473d1ae59d0b7ffac5f9a966bb833087a8c08",
-        "size": 4361873,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.10.0/qoder_0.10.0_windows_amd64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/qoder%2Fv0.11.0/qoder_0.11.0_windows_amd64.zip"
       }
     ],
     "type": "direct"
@@ -46,5 +46,5 @@
     "qoderwork",
     "checkin"
   ],
-  "version": "0.10.0"
+  "version": "0.11.0"
 }
