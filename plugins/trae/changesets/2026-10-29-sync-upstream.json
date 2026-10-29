@@ -1,1 +1,0 @@
-{"bump": "patch", "note": "同步上游 v0.12.79~v0.12.81：① 登录全程使用同一设备身份（授权页 URL == ExchangeToken DeviceInfo == 落盘凭据），账号派生身份只记录不中途替换（#47）；② 签到奖励回退只取 credits/extra_credits 之一；③ 已返回 code:0 的签到当天不再重发。"}
