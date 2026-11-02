@@ -1,1 +1,0 @@
-{"bump": "patch", "note": "改进 trae 凭据字段处理：auth.parse 回传 proxy_url/prefix/priority 等 host-owned 操作员字段（#68）；解析前先解码 base64 RawJSON，再注入字段。"}
