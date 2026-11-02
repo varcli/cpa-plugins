@@ -116,6 +116,8 @@ cpa --kiro-import /path/to/credentials --kiro-import-mode reference
 
 侧栏菜单项与插件列表的图标取自注册元数据里的 `logo`（Kiro 官方图标）。宿主对插件资源路由只做**精确路径匹配**，不会转发 `/v0/resource/plugins/<id>/<file>` 这类子路径，因此图标不能自托管在插件资源里，只能是一个浏览器可直接抓取的绝对 URL。
 
+面板会自动读取管理控制台的管理密钥（兼容 `enc::v2::` 和旧版 `enc::v1::` 存储格式），嵌入 CPA 管理页时无需手动输入。
+
 ## 模型
 
 模型 id 统一带 `kiro/` 前缀（如 `kiro/CodeBuddy-sonnet-4.5`），与宿主 `oauth-model-alias` / `oauth-excluded-models` 配置照常协同。目录优先来自账号的 `ListAvailableModels`，含上游给出的 token 上限与输入模态；发现失败时回退到内置静态目录。

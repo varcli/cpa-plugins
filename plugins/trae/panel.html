@@ -221,18 +221,33 @@ document.getElementById("title").textContent =
    NOTE: trae-* plugins do not enforce a plugin-layer key (no checkManagementAuth),
    so the panel attempts every call with whatever key it has — the host CPA
    middleware is the actual guard. On 401 we surface the manual input box. */
-const ENC_PREFIX = "enc::v1::";
+const ENC_PREFIX_V2 = "enc::v2::";
+const ENC_PREFIX_V1 = "enc::v1::";
 const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
 const PANEL_STORE = "cli-proxy-auth";
 const SS_KEY = providerName + "-mgmt-key";
 
 function _enc(t){return new TextEncoder().encode(t)}
 function _dec(b){return new TextDecoder().decode(b)}
-function _keyBytes(){try{return _enc(SECRET_SALT+"|"+window.location.host+"|"+navigator.userAgent)}catch(e){return _enc(SECRET_SALT)}}
+function _keyBytes(legacyUA){
+  try {
+    const host=window.location.host;
+    return _enc(legacyUA?SECRET_SALT+"|"+host+"|"+navigator.userAgent:SECRET_SALT+"|"+host);
+  } catch (e) {
+    return _enc(SECRET_SALT);
+  }
+}
 function _xor(d,k){const r=new Uint8Array(d.length);for(let i=0;i<d.length;i++)r[i]=d[i]^k[i%k.length];return r}
 function _b64e(b){let s="";for(let i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);return btoa(s)}
 function _b64d(s){const bin=atob(s);const b=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b}
-function deobfuscate(p){if(!p||!p.startsWith(ENC_PREFIX))return p;try{return _dec(_xor(_b64d(p.slice(ENC_PREFIX.length)),_keyBytes()))}catch(e){return p}}
+function deobfuscate(p){
+  if (!p) return p;
+  try{
+    if (p.startsWith(ENC_PREFIX_V2)) return _dec(_xor(_b64d(p.slice(ENC_PREFIX_V2.length)),_keyBytes(false)));
+    if (p.startsWith(ENC_PREFIX_V1)) return _dec(_xor(_b64d(p.slice(ENC_PREFIX_V1.length)),_keyBytes(true)));
+  } catch (e) { return p; }
+  return p;
+}
 function isEmbedded(){try{return window.self!==window.top}catch(e){return false}}
 
 function readPanelKey(){

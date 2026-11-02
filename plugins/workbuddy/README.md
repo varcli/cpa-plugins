@@ -16,6 +16,9 @@ dashboard.
   `proxy_url` / `prefix` / `priority` / `weight` / `label` / `request_retry` /
   `headers`, so the per-credential proxy and priority survive restarts and
   plugin-side rewrites.
+- **Automatic management-key handoff** — the embedded panel reads the
+  management console key from browser storage (both `enc::v2::` and legacy
+  `enc::v1::` formats), so no manual key entry is needed in CPA.
 - **Dynamic models** — live model list from the upstream models API with a
   5-minute cache and a static fallback. Host-side `oauth-model-alias` /
   `oauth-excluded-models` config applies unchanged.

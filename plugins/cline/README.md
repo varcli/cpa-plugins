@@ -86,6 +86,8 @@ CGO_ENABLED=1 go build -buildmode=c-shared -o cline.so .
 - **隐藏** 会同时写回插件配置的 `hidden_models`，因此 CPA 重新注册模型后依然生效；
 - **排序** 与 **自定义添加** 只保存在插件内存中，CPA 重启后恢复。
 
+面板会自动读取管理控制台的管理密钥（兼容 `enc::v2::` 和旧版 `enc::v1::` 存储格式），嵌入 CPA 管理页时无需手动输入。
+
 ## 模型
 
 模型 ID 默认带 `cline/` 前缀（如 `cline/cline-pass/glm-5.3`）。目录优先来自 `recommended-models` 实时接口；当所有账号都拉取失败、或进程刚启动还没有任何账号目录时，回退到内置目录（见 `provider/models.go` 的 `fallbackModels`）。内置目录同时与一份「客户端兼容清单」求并集，避免上游 feed 临时缺项时把仍可用的模型摘掉。
