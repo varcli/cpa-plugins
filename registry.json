@@ -171,7 +171,7 @@
       "name": "Trae",
       "description": "Trae unified provider for CLIProxyAPI: Trae Code CN (api.trae.cn inline_chat), Trae SOLO CN (solo_work_lite) and Trae Intl (api.marscode.com Web SOLO) in one plugin, per-variant routing, real-time SSE, daily check-in, auto-adopts legacy trae-cn / trae-solo-cn / trae-intl auth files.",
       "author": "varcli",
-      "version": "0.10.2",
+      "version": "0.10.3",
       "repository": "https://github.com/varcli/cpa-plugins",
       "homepage": "https://github.com/varcli/cpa-plugins/tree/main/plugins/trae",
       "license": "MIT",
@@ -186,30 +186,30 @@
           {
             "goarch": "amd64",
             "goos": "linux",
-            "sha256": "ba2aebb8837965f73b143444216742eafe5495a1c407388a1f8fb1b50bd398fe",
-            "size": 3493214,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.10.2/trae_0.10.2_linux_amd64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.10.3/trae_0.10.3_linux_amd64.zip"
           },
           {
             "goarch": "arm64",
             "goos": "linux",
-            "sha256": "b9e6d1504fb4020879bc67e14f5ed5ed8af239f14b593ce8e22cff97e9063b40",
-            "size": 3167576,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.10.2/trae_0.10.2_linux_arm64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.10.3/trae_0.10.3_linux_arm64.zip"
           },
           {
             "goarch": "arm64",
             "goos": "darwin",
-            "sha256": "0faa74ee74d274abe094c56bb8e21beb2042f5fcea113c95bf981260304cfe0b",
-            "size": 3074378,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.10.2/trae_0.10.2_darwin_arm64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.10.3/trae_0.10.3_darwin_arm64.zip"
           },
           {
             "goarch": "amd64",
             "goos": "windows",
-            "sha256": "7affb79f88c8c69002dceea315ef302cf1c594a33601d2c5bf35b13133e9c502",
-            "size": 3412859,
-            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.10.2/trae_0.10.2_windows_amd64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/varcli/cpa-plugins/releases/download/trae%2Fv0.10.3/trae_0.10.3_windows_amd64.zip"
           }
         ],
         "type": "direct"
