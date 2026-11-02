@@ -8,30 +8,30 @@
       {
         "goarch": "amd64",
         "goos": "linux",
-        "sha256": "81c6c9f48a9b256ea827a8db62839fedaffb4df5bf2f52b46068cbf4044e4b55",
-        "size": 4515676,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.10.1/workbuddy_0.10.1_linux_amd64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.10.2/workbuddy_0.10.2_linux_amd64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "linux",
-        "sha256": "ea57d448246e79515b9b1f471f41f64472579bc6a8c12f11d92b0abe45669d7a",
-        "size": 4112199,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.10.1/workbuddy_0.10.1_linux_arm64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.10.2/workbuddy_0.10.2_linux_arm64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "darwin",
-        "sha256": "ee8b6597590b363b73869ef49d563f30f3c477f1ce7295555337b5d5d500ea98",
-        "size": 3970678,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.10.1/workbuddy_0.10.1_darwin_arm64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.10.2/workbuddy_0.10.2_darwin_arm64.zip"
       },
       {
         "goarch": "amd64",
         "goos": "windows",
-        "sha256": "5b0d26fe7f17e1f2680c46cf244133ecb3341f9f29dacc69e9c3819fc7b747ca",
-        "size": 4387980,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.10.1/workbuddy_0.10.1_windows_amd64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/workbuddy%2Fv0.10.2/workbuddy_0.10.2_windows_amd64.zip"
       }
     ],
     "type": "direct"
@@ -46,5 +46,5 @@
     "codebuddy",
     "tencent"
   ],
-  "version": "0.10.1"
+  "version": "0.10.2"
 }
