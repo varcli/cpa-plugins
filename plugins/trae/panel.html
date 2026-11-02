@@ -514,7 +514,7 @@ function card(a){
   ${bodyHTML}
   ${a.error?`<div class="row"><span class="k">错误</span><span class="v err">${esc(a.error)}</span></div>`:""}
   ${pool.reason&&!cooling?`<div class="row"><span class="k">池状态</span><span class="v warn">${esc(pool.reason)}</span></div>`:""}
-  ${(refreshBtn||actionHTML||releaseBtn)?`<div class="actions">${refreshBtn}${actionHTML}${releaseBtn}</div>`:""}
+  ${(refreshBtn||actionHTML||releaseBtn||alignBtn)?`<div class="actions">${refreshBtn}${actionHTML}${alignBtn}${releaseBtn}</div>`:""}
   </div>`;
 }
 function applyCreditsResult(a, res){

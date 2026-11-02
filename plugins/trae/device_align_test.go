@@ -26,6 +26,11 @@ func TestPanelAlignButtonWiring(t *testing.T) {
 	if !strings.Contains(html, "a.device_match===false&&a.bound_device_id") {
 		t.Errorf("对齐按钮的出现条件必须同时约束 device_match===false 与 bound_device_id")
 	}
+	// 定义按钮还不够，卡片模板必须真正把 alignBtn 渲染到 actions 区域；
+	// 否则接口存在但页面上仍看不到入口。
+	if !strings.Contains(html, "${alignBtn}") {
+		t.Errorf("卡片 actions 必须渲染 alignBtn")
+	}
 }
 
 // 后端：bound_device_id 必须现取（CheckLogin），不接受调用方传入 ——
