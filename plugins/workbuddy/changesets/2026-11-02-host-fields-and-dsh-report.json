@@ -1,1 +1,0 @@
-{"bump": "patch", "note": "改进 workbuddy 凭据字段处理：auth.parse 回传 proxy_url/prefix/priority 等 host-owned 操作员字段（#68）；补充 DSH file-reference 11128 现场验证测试与报告（live 构建标签，常规 CI 不执行）。"}
