@@ -12,6 +12,10 @@ dashboard.
 
 - **OAuth login** — multi-account `workbuddy-<uid>.json` auth files via the
   host's auth store. CN and Global realms share one plugin, one config block.
+- **Operator-field preservation (#68)** — `auth.parse` returns
+  `proxy_url` / `prefix` / `priority` / `weight` / `label` / `request_retry` /
+  `headers`, so the per-credential proxy and priority survive restarts and
+  plugin-side rewrites.
 - **Dynamic models** — live model list from the upstream models API with a
   5-minute cache and a static fallback. Host-side `oauth-model-alias` /
   `oauth-excluded-models` config applies unchanged.

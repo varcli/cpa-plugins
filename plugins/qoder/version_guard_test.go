@@ -23,7 +23,7 @@ func TestVersionMatchesManifest(t *testing.T) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("plugin.json: %v", err)
 	}
-	// 同步上游代码时 main.go 带的是上游版本号，plugin.json 仍是本仓版本；
+	// 开发期 main.go 的版本字面量可能先于 plugin.json 更新；
 	// 两者在 `release.go publish` 时由 version 子命令统一。存在未消费的变更集
 	// 说明正处于待发版状态，此时跳过，避免把正常的过渡态当成漂移。
 	if pending, _ := filepath.Glob(filepath.Join("changesets", "*.json")); len(pending) > 0 {

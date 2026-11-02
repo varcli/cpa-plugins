@@ -706,6 +706,11 @@ func handleParseAuth(raw []byte) ([]byte, error) {
 	// note with "积分未知" in the management API even though the file on disk
 	// still carries live numbers.
 	ad := toAuthDataOptsWithNote(sa, nil, false, noteCreditsFromJSON(req.RawJSON))
+	// v0.8.73 (issue #68): re-inject the host-owned operator fields
+	// (proxy_url/prefix/...) into the AuthData — the host's loader does not
+	// re-read them from the file, so without this the panel proxy resets to
+	// "none" after every restart and the per-auth proxy stops applying.
+	applyHostOwnedAuthFields(&ad, req.RawJSON)
 	ad.ID = "" // let host compute from path (prevents ID mismatch dupes)
 	if fn := strings.TrimSpace(req.FileName); fn != "" {
 		ad.FileName = fn
@@ -814,7 +819,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			payload, _ := io.ReadAll(newHostStreamReader(stream))
 			stream.Close()
 			sig := parseQueueSignal(string(payload))
-			if sig.detected && queueRetryAllowed(attempt, queueWaited, sig.retryAfter) {
+			if queueRetryContinue(attempt, queueWaited, sig) {
 				queueWaitFn(nil, queueWaitFor(sig.retryAfter))
 				queueWaited += queueWaitFor(sig.retryAfter)
 				continue
@@ -826,7 +831,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 				// classifiers — it carries the queue_limit marker
 				// recordUpstreamFailure keys on, plus the retry history.
 				if attempt > 0 {
-					errOut = fmt.Errorf("%w（已自动重试%d次共%.0fs仍排队）", errOut, attempt, queueWaited.Seconds())
+					errOut = fmt.Errorf("%w%s", errOut, queueExhaustedNote(attempt, queueWaited, sig))
 				}
 				recordUpstreamFailure(req.AuthID, cooldownModel, statusCode, errOut.Error())
 			} else {
@@ -841,7 +846,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		stream.Close()
 		if err != nil {
 			var fe *qoderFrameError
-			if errors.As(err, &fe) && fe.queued != nil && queueRetryAllowed(attempt, queueWaited, fe.queued.retryAfter) {
+			if errors.As(err, &fe) && fe.queued != nil && queueRetryContinue(attempt, queueWaited, *fe.queued) {
 				queueWaitFn(nil, queueWaitFor(fe.queued.retryAfter))
 				queueWaited += queueWaitFor(fe.queued.retryAfter)
 				continue
@@ -849,7 +854,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			if attempt > 0 {
 				var fe *qoderFrameError
 				if errors.As(err, &fe) && fe.queued != nil {
-					err = fmt.Errorf("%w（已自动重试%d次共%.0fs仍排队）", err, attempt, queueWaited.Seconds())
+					err = fmt.Errorf("%w%s", err, queueExhaustedNote(attempt, queueWaited, *fe.queued))
 				}
 			}
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())

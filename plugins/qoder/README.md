@@ -19,7 +19,8 @@
 | **大上下文** | 客户端自带 system 时自动模板瘦身 + 消息逐字透传；上游判输入过大时给出明确指引，与积分问题严格区分 |
 | **错误归类** | 网关 504 HTML 折叠为可操作提示；业务码 112 渲染为 `plan_gate` 行，冷却只作用于（凭据, 模型）对 |
 | **auth 隔离** | 文件名前缀 `qoder-` 过滤（含收养的 `qoder-cn-`/`qoder-intl-` 旧文件） |
-| **排队票据重试** | 上游 10605 `RESOURCE_LIMIT` 返回排队票据时，按 `retryAfterSeconds` 等待并重发（最多 3 轮，对调用方不可见）；排队耗尽后给可读的 `queue_limit` 文案，并只冷却（凭据,模型）对 60 秒 |
+| **排队票据重试** | 上游 10605 `RESOURCE_LIMIT` 返回排队票据时，真实队列深度按 `retryAfterSeconds` 等待并重发（最多 3 轮）；`queueCount=0` 的空队列票据改走 700ms 快速阶梯（按模型 12s 窗口去重），耗尽后给可读的 `queue_limit` 文案；真实深度冷却 60 秒，空队列冷却 10 秒 |
+| **操作员字段透传** | `auth.parse` 回传 `proxy_url` / `prefix` / `priority` / `weight` / `label` / `request_retry` / `headers`，重启或插件写回后面板代理与凭据优先级不再丢失（#68） |
 | **图像输入** | 支持 OpenAI 多模态 `image_url` 输入：插件上传/引用图像后转发，视觉不可用时给诚实拒绝文案而非静默失败 |
 | **角色归一** | OpenAI `developer` 角色自动归一为 `system`（上游只认 system/user/assistant） |
 
@@ -78,7 +79,7 @@ CGO_ENABLED=1 go build -buildmode=c-shared -o qoder.so .   # windows 下 -o qode
 | `model_prefix` | string | 注册模型 ID 前缀（默认 `qoder/`），缺尾斜杠自动补 |
 | `enable_model_prefix` | bool | 是否加前缀（默认 true）。关闭后使用裸上游 ID |
 | `claim_unverified` | bool | 是否代领「面值不可核实」的签到行（默认 false） |
-| `queue_wait_budget` | int | 10605 `RESOURCE_LIMIT` 排队票据的累计等待预算，0–150 秒（默认 150）。`0` 关闭排队重试；单次等待上限 45 秒、最多 3 轮仍生效。不限制网络与生成耗时 |
+| `queue_wait_budget` | int | 10605 `RESOURCE_LIMIT` 排队票据的累计等待预算，0–150 秒（默认 150）。`0` 关闭排队重试；真实队列仍受单次 45 秒、最多 3 轮约束，空队列快速阶梯最多 4 轮。不限制网络与生成耗时 |
 | `stream_head_timeout` | int | 流式首包门超时秒数，0 = 关闭（默认） |
 | `usage_report_url` | string | CPAMP usage 上报地址覆盖（也可用 env `USAGE_REPORT_URL`） |
 | `usage_report_key` | string | CPAMP admin key 覆盖（优先 env / secret 文件自动探测） |

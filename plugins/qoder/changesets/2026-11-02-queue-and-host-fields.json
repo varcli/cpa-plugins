@@ -1,0 +1,1 @@
+{"bump": "patch", "note": "改进 qoder 队列票据与凭据字段处理：queueCount=0 的排队票据改走 700ms 快速重试阶梯（按模型 12s 窗口去重），空队列票据只冷却 10s，真实队列深度仍按票据等待；null/不可解析 queueCount 视为未上报；auth.parse 回传 proxy_url/prefix/priority 等 host-owned 操作员字段（#68）。"}

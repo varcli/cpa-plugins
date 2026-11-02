@@ -2,3 +2,6 @@
 # 本机 core.autocrlf=true 时 git checkout/pull 会写入 CRLF, 让 --check 假失败
 # (内容无差异却报 out of date), 进而在 release.go publish 的门禁处误拦发布。
 registry.json text eol=lf
+# Plugin Go sources are LF in the index and on every checkout; this host has
+# core.autocrlf=true, so without this every gofmt pass reports the whole tree.
+plugins/**/*.go text eol=lf

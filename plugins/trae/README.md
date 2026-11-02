@@ -23,6 +23,7 @@ CLIProxyAPI 的 Trae 统一 Provider 插件：**一个插件同时覆盖 Trae Co
 | **回调一致性** | 资源回调路由与 self-complete 走同一套设备身份与持久化路径，远程/容器环境下登录不再卡 pending |
 | **登录设备一致性** | v0.12.79 起整段登录只用一个设备身份：授权页 URL、ExchangeToken DeviceInfo、落盘凭据与后续绑定续期都沿用同一设备，账号派生身份只做诊断记录（#47） |
 | **签到奖励不重复** | 签到返回 `code:0` 后同一天不再重发；奖励回退只取 credits / extra_credits 其一，绝不累加（v0.12.80/v0.12.81） |
+| **操作员字段透传** | `auth.parse` 先解码 base64 `RawJSON`，再回传 `proxy_url` / `prefix` / `priority` / `weight` / `label` / `request_retry` / `headers`；重启或插件写回后面板代理与凭据优先级不再丢失（#68） |
 
 ## 安装
 
