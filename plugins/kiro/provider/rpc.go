@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -101,6 +102,15 @@ func loadedConfig() pluginConfig {
 	if config.DesktopTokenURL == "" {
 		config.DesktopTokenURL = defaultTokenURL
 	}
+	if config.MinTokenInterval == "" {
+		config.MinTokenInterval = "1s"
+	}
+	if config.MaxTokenInterval == "" {
+		config.MaxTokenInterval = "2s"
+	}
+	if config.SuspendCooldown == "" {
+		config.SuspendCooldown = "1h"
+	}
 	return config
 }
 
@@ -181,6 +191,9 @@ func applyConfig(raw []byte) {
 		LoginMode:          loadedConfig().LoginMode, // sticky: keep unless overridden below
 		ModelPrefix:        "kiro/",
 		SocialProvider:     defaultSocialProvider,
+		MinTokenInterval:   "1s",
+		MaxTokenInterval:   "2s",
+		SuspendCooldown:    "1h",
 		SSOStartURL:        defaultSSOStartURL,
 		BrowserSignInURL:   defaultSignInURL,
 		BrowserRedirectURI: defaultRedirectURI,
@@ -196,6 +209,12 @@ func applyConfig(raw []byte) {
 			config.LoginMode = normalizeLoginMode(strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "login_mode:")), "\"'"))
 		case strings.HasPrefix(line, "social_provider:"):
 			config.SocialProvider = normalizeSocialProvider(strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "social_provider:")), "\"'"))
+		case strings.HasPrefix(line, "min_token_interval:"):
+			config.MinTokenInterval = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "min_token_interval:")), "\"'")
+		case strings.HasPrefix(line, "max_token_interval:"):
+			config.MaxTokenInterval = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "max_token_interval:")), "\"'")
+		case strings.HasPrefix(line, "suspend_cooldown:"):
+			config.SuspendCooldown = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "suspend_cooldown:")), "\"'")
 		case strings.HasPrefix(line, "api_region:"):
 			config.APIRegion = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "api_region:")), "\"'")
 		case strings.HasPrefix(line, "sso_region:"):
@@ -232,7 +251,35 @@ func applyConfig(raw []byte) {
 	if config.LoginMode == "" {
 		config.LoginMode = defaultLoginMode
 	}
+	if config.MinTokenInterval == "" {
+		config.MinTokenInterval = "1s"
+	}
+	if config.MaxTokenInterval == "" {
+		config.MaxTokenInterval = "2s"
+	}
+	if config.SuspendCooldown == "" {
+		config.SuspendCooldown = "1h"
+	}
+	if _, _, _, err := pacingDurationsFor(config); err != nil {
+		return
+	}
 	configValue.Store(config)
+}
+
+func pacingDurationsFor(config pluginConfig) (time.Duration, time.Duration, time.Duration, error) {
+	minInterval, err := time.ParseDuration(config.MinTokenInterval)
+	if err != nil || minInterval <= 0 {
+		return 0, 0, 0, fmt.Errorf("invalid min_token_interval")
+	}
+	maxInterval, err := time.ParseDuration(config.MaxTokenInterval)
+	if err != nil || maxInterval < minInterval {
+		return 0, 0, 0, fmt.Errorf("invalid max_token_interval")
+	}
+	cooldown, err := time.ParseDuration(config.SuspendCooldown)
+	if err != nil || cooldown <= 0 {
+		return 0, 0, 0, fmt.Errorf("invalid suspend_cooldown")
+	}
+	return minInterval, maxInterval, cooldown, nil
 }
 
 func registration(raw []byte) ([]byte, error) {

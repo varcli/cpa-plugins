@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -79,10 +80,28 @@ func refreshAuth(raw []byte) ([]byte, error) {
 	}
 	refreshed, errRefresh := refreshCredential(cred, req.HostCallbackID)
 	if errRefresh != nil {
+		if isBlockedError(errRefresh) {
+			auth, errAuth := authDataFromCredential(cred)
+			if errAuth == nil {
+				auth.Disabled = true
+				auth.StorageJSON = blockedStorage(req.StorageJSON, cred, time.Now().UTC())
+				auth.Metadata = map[string]any{"disabled": true, "note": blockedNote, "auth_method": cred.AuthMethod}
+				return okEnvelope(authRefreshResponse{Auth: auth, NextRefreshAfter: time.Now().UTC().Add(24 * time.Hour)})
+			}
+		}
 		return pluginErrorEnvelope(errRefresh), nil
 	}
 	refreshed, _, errProfile := ensureProfileARN(refreshed, req.HostCallbackID)
 	if errProfile != nil {
+		if isBlockedError(errProfile) {
+			auth, errAuth := authDataFromCredential(refreshed)
+			if errAuth == nil {
+				auth.Disabled = true
+				auth.StorageJSON = blockedStorage(req.StorageJSON, refreshed, time.Now().UTC())
+				auth.Metadata = map[string]any{"disabled": true, "note": blockedNote, "auth_method": refreshed.AuthMethod}
+				return okEnvelope(authRefreshResponse{Auth: auth, NextRefreshAfter: time.Now().UTC().Add(24 * time.Hour)})
+			}
+		}
 		return pluginErrorEnvelope(errProfile), nil
 	}
 	auth, errAuth := authDataFromCredential(refreshed)
@@ -92,6 +111,13 @@ func refreshAuth(raw []byte) ([]byte, error) {
 	// Empty ID/FileName tells the host to keep the existing record identity.
 	auth.ID = ""
 	auth.FileName = ""
+	if cred.AuthMethod == authMethodAPIKey {
+		auth.NextRefreshAfter = time.Now().UTC().Add(24 * time.Hour)
+	}
+	nextRefresh := nextRefreshTime(refreshed)
+	if cred.AuthMethod == authMethodAPIKey {
+		nextRefresh = auth.NextRefreshAfter
+	}
 	// Re-marshaling the credential drops fields the plugin does not model
 	// (disabled, priority, note, ...). Carry them over from the stored JSON.
 	var fresh map[string]any
@@ -110,7 +136,7 @@ func refreshAuth(raw []byte) ([]byte, error) {
 			auth.Attributes[key] = value
 		}
 	}
-	return okEnvelope(authRefreshResponse{Auth: auth, NextRefreshAfter: nextRefreshTime(refreshed)})
+	return okEnvelope(authRefreshResponse{Auth: auth, NextRefreshAfter: nextRefresh})
 }
 
 func refreshCredential(current credential, callbackID string) (credential, error) {
@@ -118,13 +144,34 @@ func refreshCredential(current credential, callbackID string) (credential, error
 	if errReload != nil {
 		return credential{}, statusError{Code: "credential_reload_failed", Message: errReload.Error(), HTTPStatus: http.StatusUnauthorized}
 	}
+	if cred.AuthMethod == authMethodAPIKey {
+		return cred, nil
+	}
 	if strings.TrimSpace(cred.RefreshToken) == "" {
 		return credential{}, statusError{Code: "missing_refresh_token", Message: "Kiro refresh token is missing", HTTPStatus: http.StatusUnauthorized}
 	}
 	var endpoint string
 	var body []byte
 	var headers http.Header
-	if cred.AuthType == "aws_sso_oidc" || (cred.ClientID != "" && cred.ClientSecret != "") {
+	if cred.AuthMethod == authMethodExternalIDP {
+		if errEndpoint := validateTokenEndpoint(cred.TokenEndpoint); errEndpoint != nil {
+			return credential{}, statusError{Code: "invalid_token_endpoint", Message: errEndpoint.Error(), HTTPStatus: http.StatusUnauthorized}
+		}
+		form := url.Values{
+			"client_id":     {cred.ClientID},
+			"grant_type":    {"refresh_token"},
+			"refresh_token": {cred.RefreshToken},
+		}
+		if len(cred.Scopes) > 0 {
+			form.Set("scope", strings.Join(cred.Scopes, " "))
+		}
+		endpoint = cred.TokenEndpoint
+		body = []byte(form.Encode())
+		headers = http.Header{
+			"Content-Type": []string{"application/x-www-form-urlencoded"},
+			"Accept":       []string{"application/json"},
+		}
+	} else if cred.AuthMethod == authMethodIDC || cred.AuthType == "aws_sso_oidc" || (cred.ClientID != "" && cred.ClientSecret != "") {
 		if cred.ClientID == "" || cred.ClientSecret == "" {
 			return credential{}, statusError{Code: "missing_oidc_registration", Message: "Kiro AWS SSO client ID or client secret is missing", HTTPStatus: http.StatusUnauthorized}
 		}
@@ -196,6 +243,9 @@ func decodeCredential(raw []byte) (credential, error) {
 }
 
 func credentialNeedsRefresh(cred credential) bool {
+	if cred.AuthMethod == authMethodAPIKey {
+		return false
+	}
 	if strings.TrimSpace(cred.AccessToken) == "" {
 		return true
 	}
@@ -206,6 +256,7 @@ func credentialNeedsRefresh(cred credential) bool {
 type statusError struct {
 	Code       string
 	Message    string
+	Body       string
 	Retryable  bool
 	HTTPStatus int
 	Cause      error
@@ -237,7 +288,7 @@ func upstreamStatusError(prefix string, status int, body []byte) statusError {
 	} else if status >= 400 && status < 500 {
 		code = "invalid_request"
 	}
-	return statusError{Code: code, Message: message, Retryable: retryable, HTTPStatus: status}
+	return statusError{Code: code, Message: message, Body: string(body), Retryable: retryable, HTTPStatus: status}
 }
 
 func pluginErrorEnvelope(err error) []byte {

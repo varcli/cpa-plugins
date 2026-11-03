@@ -57,6 +57,7 @@ func registerManagement() ([]byte, error) {
 			{Method: http.MethodGet, Path: base + "/usage", Description: "Returns sanitized Kiro quota and usage-limit data."},
 			{Method: http.MethodPost, Path: base + "/quotaRequest", Description: "Refreshes Kiro quota without sending model requests."},
 			{Method: http.MethodGet, Path: base + "/credentials", Description: "Returns sanitized CPA credential records and request statistics."},
+			{Method: http.MethodPost, Path: base + "/credentials/import", Description: "Imports a Kiro refresh token, External IdP credential, or API Key."},
 			{Method: http.MethodPost, Path: base + "/oauth/relogin/start", Description: "Starts Kiro OAuth again and replaces an existing Kiro credential."},
 			{Method: http.MethodGet, Path: base + "/oauth/relogin/status", Description: "Polls a Kiro credential replacement login."},
 			{Method: http.MethodPost, Path: base + "/oauth/login/start", Description: "Starts a Kiro OAuth login from the panel."},
@@ -108,6 +109,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return handleBrowserCallbackManagement(req)
 	case req.Method == http.MethodGet && path == base+"/credentials":
 		return handleCredentialRecords()
+	case req.Method == http.MethodPost && path == base+"/credentials/import":
+		return handleCredentialImport(req)
 	case path == base+"/usage" || path == base+"/quota" || path == base+"/quotaRequest":
 		// "/quota" is kept in the dispatch table for older callers only — it
 		// is unreachable through CPA because the host's own route wins first

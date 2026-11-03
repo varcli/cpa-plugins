@@ -163,8 +163,13 @@ func parseCredentialJSON(raw []byte, sourcePath, mode string) ([]credential, err
 	var out []credential
 	for _, object := range objects {
 		cred := credentialFromMap(object, sourcePath, "json", mode)
-		if cred.RefreshToken == "" {
+		if cred.RefreshToken == "" && cred.KiroAPIKey == "" {
 			continue
+		}
+		if cred.AuthMethod == authMethodExternalIDP && cred.ClientID != "" {
+			if errEndpoint := validateTokenEndpoint(cred.TokenEndpoint); errEndpoint != nil {
+				return nil, errEndpoint
+			}
 		}
 		out = append(out, cred)
 	}
@@ -187,25 +192,38 @@ func credentialFromMap(data map[string]any, sourcePath, sourceKind, mode string)
 	if persistedMode == "" {
 		persistedMode = mode
 	}
+	authMethodValue := kironx.String(data, "authMethod", "auth_method")
+	authTypeValue := kironx.String(data, "authType", "auth_type")
+	if authMethodValue == "" && normalizeExplicitAuthMethod(authTypeValue) != "" {
+		authMethodValue = authTypeValue
+	}
 	cred := credential{
 		Version:        1,
 		AuthID:         kironx.String(data, "authId", "auth_id"),
+		AuthMethod:     normalizeAuthMethod(authMethodValue, data),
+		AuthType:       authTypeValue,
 		Mode:           normalizeMode(persistedMode),
 		SourcePath:     persistedSourcePath,
 		SourceKind:     persistedSourceKind,
 		SocialProvider: kironx.String(data, "social_provider"),
+		Provider:       kironx.String(data, "kiroProvider", "kiro_provider", "provider"),
 		SourceTokenKey: kironx.String(data, "source_token_key"),
 		AccessToken:    kironx.String(data, "accessToken", "access_token"),
 		RefreshToken:   kironx.String(data, "refreshToken", "refresh_token"),
 		ClientID:       kironx.String(data, "clientId", "client_id"),
 		ClientSecret:   kironx.String(data, "clientSecret", "client_secret"),
 		ClientIDHash:   kironx.String(data, "clientIdHash", "client_id_hash"),
+		TokenEndpoint:  kironx.String(data, "tokenEndpoint", "token_endpoint"),
+		KiroAPIKey:     kironx.String(data, "kiroApiKey", "kiro_api_key"),
 		ProfileARN:     kironx.String(data, "profileArn", "profile_arn", "arn"),
 		SSORegion:      kironx.String(data, "ssoRegion", "sso_region", "region"),
 		APIRegion:      kironx.String(data, "apiRegion", "api_region"),
 		ExpiresAt:      expiryValue(data, "expiresAt", "expires_at", "expiresIn", "expires_in"),
+		Email:          kironx.String(data, "email"),
+		UserID:         kironx.String(data, "userId", "user_id"),
 		Label:          kironx.String(data, "label", "name", "accountName"),
 		Fingerprint:    kironx.String(data, "fingerprint"),
+		DisableCooling: boolValue(data, "disable_cooling", "disableCooling"),
 	}
 	if scopes, okScopes := data["scopes"].([]any); okScopes {
 		for _, scope := range scopes {
@@ -216,6 +234,15 @@ func credentialFromMap(data map[string]any, sourcePath, sourceKind, mode string)
 	}
 	finalizeCredential(&cred)
 	return cred
+}
+
+func boolValue(data map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if value, ok := data[key].(bool); ok {
+			return value
+		}
+	}
+	return false
 }
 
 func resolveSiblingRegistration(cred *credential) {
@@ -279,6 +306,12 @@ func loadSQLiteCredential(path, mode string) (credential, error) {
 		}
 		break
 	}
+	if cred.AuthMethod == authMethodIDC && (cred.ClientID == "" || cred.ClientSecret == "") {
+		return credential{}, fmt.Errorf("Kiro IdC credentials require clientId and clientSecret")
+	}
+	if cred.AuthMethod == authMethodExternalIDP && cred.ClientID == "" {
+		return credential{}, fmt.Errorf("Kiro External IdP credentials require clientId")
+	}
 
 	var profileJSON string
 	if db.QueryRow("SELECT value FROM state WHERE key = 'api.codewhisperer.profile'").Scan(&profileJSON) == nil {
@@ -293,7 +326,7 @@ func loadSQLiteCredential(path, mode string) (credential, error) {
 		}
 	}
 	finalizeCredential(&cred)
-	if cred.RefreshToken == "" {
+	if cred.RefreshToken == "" && cred.KiroAPIKey == "" {
 		return credential{}, errUnrecognizedCredential
 	}
 	return cred, nil
@@ -339,6 +372,29 @@ func finalizeCredential(cred *credential) {
 	}
 	cred.Type = providerID
 	cred.Kind = "kiro"
+	cred.AuthMethod = normalizeAuthMethod(cred.AuthMethod, map[string]any{
+		"kiro_api_key":   cred.KiroAPIKey,
+		"token_endpoint": cred.TokenEndpoint,
+		"client_id":      cred.ClientID,
+		"client_secret":  cred.ClientSecret,
+	})
+	if cred.Email == "" {
+		cred.Email = cred.Label
+		if !strings.Contains(cred.Email, "@") {
+			cred.Email = ""
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(cred.SocialProvider), "google") || strings.EqualFold(strings.TrimSpace(cred.SocialProvider), "github") {
+		cred.SocialProvider = strings.ToLower(strings.TrimSpace(cred.SocialProvider))
+	}
+	if cred.SocialProvider == "" && cred.AuthMethod == authMethodSocial {
+		switch strings.ToLower(strings.TrimSpace(cred.Provider)) {
+		case "google":
+			cred.SocialProvider = "google"
+		case "github":
+			cred.SocialProvider = "github"
+		}
+	}
 	if cred.SSORegion == "" {
 		cred.SSORegion = defaultRegion
 	}
@@ -357,17 +413,41 @@ func finalizeCredential(cred *credential) {
 		// api_region override says otherwise.
 		cred.APIRegion = defaultRegion
 	}
-	if cred.ClientID != "" && cred.ClientSecret != "" {
+	switch cred.AuthMethod {
+	case authMethodAPIKey:
+		cred.AuthType = "kiro_api_key"
+	case authMethodExternalIDP:
+		cred.AuthType = "external_idp"
+	case authMethodIDC:
 		cred.AuthType = "aws_sso_oidc"
-	} else {
+	default:
 		cred.AuthType = "kiro_desktop"
 	}
-	if cred.Label == "" {
-		cred.Label = "Kiro Account"
+	if strings.TrimSpace(cred.Label) == "" {
+		cred.Label = "Kiro " + cred.displayMethod()
 	}
 	if cred.Fingerprint == "" {
 		sum := sha256.Sum256([]byte(cred.ProfileARN + "\x00" + cred.ClientID + "\x00" + cred.SourcePath))
 		cred.Fingerprint = hex.EncodeToString(sum[:])
+	}
+	if cred.Provider == "" {
+		switch cred.AuthMethod {
+		case authMethodExternalIDP:
+			cred.Provider = "AzureAD"
+		case authMethodIDC:
+			if strings.Contains(strings.ToLower(cred.Label), "builder") {
+				cred.Provider = "BuilderId"
+			} else {
+				cred.Provider = "Enterprise"
+			}
+		case authMethodSocial:
+			switch cred.SocialProvider {
+			case "google":
+				cred.Provider = "Google"
+			case "github":
+				cred.Provider = "Github"
+			}
+		}
 	}
 }
 
@@ -380,11 +460,27 @@ func authDataFromCredential(cred credential) (authData, error) {
 		return authData{}, fmt.Errorf("encode Kiro credential storage: %w", errMarshal)
 	}
 	nextRefresh := nextRefreshTime(cred)
+	label := cred.Label
+	if cred.Email != "" {
+		label = cred.Email + " (" + cred.displayMethod() + ")"
+	} else if cred.AuthMethod == authMethodAPIKey {
+		label = "Kiro API Key"
+	} else if strings.TrimSpace(label) == "" {
+		label = "Kiro " + cred.displayMethod()
+	}
+	if cred.Email != "" || cred.UserID != "" {
+		id = credentialID(cred)
+		cred.AuthID = id
+		storage, errMarshal = json.Marshal(cred)
+		if errMarshal != nil {
+			return authData{}, fmt.Errorf("encode Kiro credential storage: %w", errMarshal)
+		}
+	}
 	return authData{
 		Provider:         providerID,
 		ID:               id,
-		FileName:         id + ".json",
-		Label:            cred.Label,
+		FileName:         cred.fileName(),
+		Label:            label,
 		StorageJSON:      storage,
 		Metadata:         credentialMetadata(cred),
 		Attributes:       credentialAttributes(cred),
@@ -392,12 +488,18 @@ func authDataFromCredential(cred credential) (authData, error) {
 	}, nil
 }
 
-// credentialMetadata / credentialAttributes mirror the reference project's
-// split: the social identity provider is surfaced only for the providers the
-// social-device flow can actually produce, so a stray persisted value cannot
-// leak into the host's auth records.
+// credentialMetadata / credentialAttributes expose normalized identity fields
+// separately. The social identity provider is surfaced only for the providers
+// the social-device flow can actually produce, so a stray persisted value
+// cannot leak into the host's auth records.
 func credentialMetadata(cred credential) map[string]any {
-	metadata := map[string]any{"auth_type": cred.AuthType, "source_kind": cred.SourceKind}
+	metadata := map[string]any{"auth_type": cred.AuthType, "auth_method": cred.AuthMethod, "source_kind": cred.SourceKind}
+	if cred.Email != "" {
+		metadata["email"] = cred.Email
+	}
+	if cred.UserID != "" {
+		metadata["user_id"] = cred.UserID
+	}
 	if provider := strings.ToLower(strings.TrimSpace(cred.SocialProvider)); provider == "google" || provider == "github" {
 		metadata["social_provider"] = provider
 	}
@@ -405,7 +507,7 @@ func credentialMetadata(cred credential) map[string]any {
 }
 
 func credentialAttributes(cred credential) map[string]string {
-	attributes := map[string]string{"auth_provider": providerID, "api_region": cred.APIRegion}
+	attributes := map[string]string{"auth_provider": providerID, "api_region": cred.APIRegion, "auth_method": cred.AuthMethod}
 	if provider := strings.ToLower(strings.TrimSpace(cred.SocialProvider)); provider == "google" || provider == "github" {
 		attributes["social_provider"] = provider
 	}
@@ -425,11 +527,18 @@ func oauthCredentialID(socialProvider, state string) string {
 
 func credentialID(cred credential) string {
 	if stable := validCredentialID(cred.AuthID); stable != "" {
-		return stable
+		if cred.Email == "" && cred.UserID == "" {
+			return stable
+		}
 	}
-	identity := cred.ProfileARN + "\x00" + cred.ClientID + "\x00" + cred.SourcePath + "\x00" + cred.SourceTokenKey
+	if cred.UserID != "" || cred.Email != "" {
+		identity := cred.AuthMethod + "\x00" + firstNonEmpty(cred.UserID, cred.Email)
+		sum := sha256.Sum256([]byte(identity))
+		return "kiro-" + hex.EncodeToString(sum[:10])
+	}
+	identity := cred.UserID + "\x00" + cred.Email + "\x00" + cred.ProfileARN + "\x00" + cred.ClientID + "\x00" + cred.SourcePath + "\x00" + cred.SourceTokenKey
 	if strings.Trim(identity, "\x00") == "" {
-		identity = cred.RefreshToken
+		identity = cred.KiroAPIKey + "\x00" + cred.RefreshToken
 	}
 	sum := sha256.Sum256([]byte(identity))
 	return "kiro-" + hex.EncodeToString(sum[:10])
@@ -449,6 +558,9 @@ func validCredentialID(value string) string {
 }
 
 func nextRefreshTime(cred credential) time.Time {
+	if cred.AuthMethod == authMethodAPIKey {
+		return time.Now().UTC().Add(24 * time.Hour)
+	}
 	expires, errParse := parseExpiry(cred.ExpiresAt)
 	if errParse != nil || expires.IsZero() {
 		return time.Now().UTC()
@@ -527,7 +639,7 @@ func deduplicateCredentials(creds []credential) []credential {
 	seen := make(map[string]struct{})
 	out := make([]credential, 0, len(creds))
 	for _, cred := range creds {
-		if cred.RefreshToken == "" {
+		if cred.RefreshToken == "" && cred.KiroAPIKey == "" {
 			continue
 		}
 		id := credentialID(cred)

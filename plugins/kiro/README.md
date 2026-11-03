@@ -1,6 +1,6 @@
 # Kiro
 
-CLIProxyAPI 的 Kiro（AWS CodeWhisperer）Provider 插件：导入 Kiro IDE / kiro-cli / Amazon Q / AWS SSO 凭证，支持 Google/GitHub 社交设备码、Kiro 桌面浏览器 OAuth 与 AWS SSO 设备码 / 组织登录，实时拉取模型目录，流式执行 chat completions，查询配额并提供管理面板。
+CLIProxyAPI 的 Kiro（AWS CodeWhisperer）Provider 插件：导入 Kiro IDE / kiro-cli / Amazon Q / AWS SSO 凭证，支持 Google/GitHub 社交设备码、Kiro 桌面浏览器 OAuth、AWS SSO 设备码 / 组织登录、API Key 与 External IdP，实时拉取模型目录，流式执行 chat completions，查询配额并提供管理面板。
 
 ## 功能
 
@@ -8,6 +8,10 @@ CLIProxyAPI 的 Kiro（AWS CodeWhisperer）Provider 插件：导入 Kiro IDE / k
 |---|---|
 | **凭证导入** | 扫描目录导入 Kiro IDE / kiro-cli / Amazon Q / AWS SSO 凭证：JSON、SQLite（`auth_kv`）、同目录 `<clientIdHash>.json` device-registration。`reference` 模式跟随原始文件，`copy` 模式保存独立快照 |
 | **多路登录** | Google/GitHub 社交设备码（默认）、Kiro 桌面浏览器 OAuth（PKCE，旧版）、AWS SSO OIDC 设备码（Builder ID 与组织通用）、IAM Identity Center 组织浏览器登录 |
+| **API Key / External IdP** | 面板直接导入 Kiro API Key、Social / IdC Refresh Token 或 External IdP 凭据；API Key 使用 `API_KEY` 令牌类型，External IdP 支持标准 OAuth 表单刷新 |
+| **账号整理** | 登录后读取邮箱与用户 ID，按账号生成文件名；同一账号重新登录会覆盖原凭据，避免重复卡片 |
+| **失败隔离** | Kiro 返回 403 `User is not authorized to make this call` 时自动禁用账号并写入备注；402 / 暂停账号按窗口退出轮换 |
+| **请求节流** | 按凭据控制请求间隔；并发排队超过上限时交给宿主换号，避免持续打爆同一账号 |
 | **模型发现** | `ListAvailableModels` 实时目录，按账号的 `profileArn` 拉取；失败时回退到内置静态目录 + 配置的 `static_models` |
 | **流式执行** | AWS Event Stream 二进制分帧解析（CRC32 校验、工具调用增量拼装、usage 透出），非流式请求聚合为单个 completion |
 | **配额查询** | `GetUsageLimits` 用量与剩余额度，按账号卡片展示 |
@@ -47,6 +51,9 @@ CGO_ENABLED=1 go build -buildmode=c-shared -o kiro.so .
 | `import_mode` | enum | 凭据导入归属模式：`reference`（默认，跟随原始文件）或 `copy`（独立快照） |
 | `login_mode` | enum | **新登录**使用的流程：`social-device`（默认，Google/GitHub 社交设备码）、`kiro-browser`（Kiro 桌面浏览器 OAuth）、`aws-device`（AWS SSO 设备码，支持 Builder ID 与组织）。该键为「粘性」：仅当配置显式出现 `login_mode:` 行时才改变，避免宿主中途重发空配置把流程打回默认 |
 | `social_provider` | enum | `social-device` 使用哪个第三方账号：`google`（默认）或 `github`。面板上的账号选择器按次覆盖该值，无需改宿主配置 |
+| `min_token_interval` | string | 同一凭据两次模型请求的最小间隔，默认 `1s` |
+| `max_token_interval` | string | 同一凭据的间隔上限和最大排队时间，默认 `2s` |
+| `suspend_cooldown` | string | Kiro 判定账号暂停后退出轮换的时长，默认 `1h` |
 | `api_region` | string | Kiro runtime 区域，通常 `us-east-1`，与 AWS SSO 区域无关 |
 | `sso_region` | string | AWS SSO OIDC 回退区域 |
 | `sso_start_url` | string | 决定设备码登录的账号类型：`https://view.awsapps.com/start` 为 Builder ID；组织账号填 IAM Identity Center 的 AWS access portal URL |
@@ -60,11 +67,12 @@ CGO_ENABLED=1 go build -buildmode=c-shared -o kiro.so .
 
 ### 登录
 
-在管理面板的 Kiro 页面选好第三方账号后点「新增 Kiro 账号」：
+在管理面板的 Kiro 页面选择登录方式，再点「开始登录」：
 
-- **社交设备码**（`login_mode: social-device`，默认）：插件向 Kiro 申请设备码并打开 `app.kiro.dev` 的验证页，在页面用 Google 或 GitHub 账号完成授权，然后回来点「检查状态」（面板每 3 秒也会自动轮询）。整个流程没有回调地址，因此不需要粘贴任何链接，在远程 / 容器化 CPA 服务器上同样可用。授权按次独立：同一个第三方账号重复登录会新增一张卡片，不会覆盖已有账号。
+- **社交设备码**（`login_mode: social-device`，默认）：插件向 Kiro 申请设备码并打开 `app.kiro.dev` 的验证页，在页面用 Google 或 GitHub 账号完成授权，然后回来点「检查状态」（面板每 3 秒也会自动轮询）。整个流程没有回调地址，因此不需要粘贴任何链接，在远程 / 容器化 CPA 服务器上同样可用。授权完成后会读取账号邮箱；同一账号重新登录会复用同一个凭据文件。
 - **浏览器流程**（`login_mode: kiro-browser`，旧版）：在新标签页完成授权。Kiro 的桌面 token 端点现在会拒绝社交账号在这条流程里拿到的授权码（表现为 `Kiro browser token exchange failed: Oops, something went wrong. Please try again later.`），仅当账号确实需要它时才使用。若浏览器停在「无法连接 127.0.0.1:&lt;端口&gt;」页面，把地址栏完整链接粘贴到面板的粘贴框提交即可（无需改写前缀）。粘贴的链接会走与回调页完全相同的校验与落盘路径，提交后立即换取 token 并保存凭据。
 - **AWS SSO 设备码**（`login_mode: aws-device`）：访问面板给出的验证地址并输入用户码。该流程同时支持 Builder ID 与 IAM Identity Center 组织账号。组织账号走两步：粘贴回调后插件返回验证地址与用户码，按提示在浏览器打开验证页即可。
+- **API Key / Refresh Token**：选择「导入 API Key」或「导入 Refresh Token」，按表单填写后直接保存。Refresh Token 支持 Social、IdC 和 External IdP；首次刷新失败时凭据仍会保存，并返回警告。
 
 粘贴框同时服务于「新增账号」与卡片上的「重新登录」：插件会按当前登录类型把回调提交到对应端点（`/oauth/login/status` 或 `/oauth/relogin/status`）。
 
@@ -93,6 +101,7 @@ cpa --kiro-import /path/to/credentials --kiro-import-mode reference
 | `GET /usage` | 列出 Kiro 账号的用量与剩余额度（面板数据源） |
 | `POST /quotaRequest` | 重新向上游查询配额（不发送模型请求） |
 | `GET /credentials` | 列出 CPA 凭据记录与插件内存中的请求统计 |
+| `POST /credentials/import` | 导入 API Key、Social / IdC Refresh Token 或 External IdP 凭据 |
 | `POST /oauth/login/start` | 从面板开始一次 Kiro OAuth 登录 |
 | `GET /oauth/login/status` | 轮询面板发起的登录 |
 | `POST /oauth/login/status` | 提交浏览器回调 URL（`callback_url`）完成登录 |
@@ -120,7 +129,7 @@ cpa --kiro-import /path/to/credentials --kiro-import-mode reference
 
 ## 模型
 
-模型 id 统一带 `kiro/` 前缀（如 `kiro/CodeBuddy-sonnet-4.5`），与宿主 `oauth-model-alias` / `oauth-excluded-models` 配置照常协同。目录优先来自账号的 `ListAvailableModels`，含上游给出的 token 上限与输入模态；发现失败时回退到内置静态目录。
+模型 id 统一带 `kiro/` 前缀（如 `kiro/CodeBuddy-sonnet-4.5`），与宿主 `oauth-model-alias` / `oauth-excluded-models` 配置照常协同。全局 `oauth-excluded-models` 会在插件侧先过滤，账号自己的禁用列表再叠加。目录优先来自账号的 `ListAvailableModels`，含服务端给出的 token 上限与输入模态；发现失败时回退到内置静态目录。
 
 ## 开发
 

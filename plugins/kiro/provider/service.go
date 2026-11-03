@@ -20,8 +20,8 @@ func kiroServiceEndpoint(configured, region string) string {
 }
 
 func kiroServiceHeaders(cred credential, target string) http.Header {
-	return http.Header{
-		"Authorization":               []string{"Bearer " + cred.AccessToken},
+	headers := http.Header{
+		"Authorization":               []string{"Bearer " + cred.bearerToken()},
 		"Content-Type":                []string{"application/x-amz-json-1.0"},
 		"X-Amz-Target":                []string{target},
 		"User-Agent":                  []string{"Kiro-CLI"},
@@ -29,6 +29,10 @@ func kiroServiceHeaders(cred credential, target string) http.Header {
 		"Amz-Sdk-Invocation-Id":       []string{randomID()},
 		"Amz-Sdk-Request":             []string{"attempt=1; max=3"},
 	}
+	if tokenType := cred.tokenType(); tokenType != "" {
+		headers.Set("TokenType", tokenType)
+	}
+	return headers
 }
 
 func callKiroService(cred credential, callbackID, configuredURL, target string, payload any) (hostHTTPResponse, error) {
@@ -49,7 +53,10 @@ func ensureProfileARN(cred credential, callbackID string) (credential, bool, err
 	if strings.TrimSpace(cred.ProfileARN) != "" {
 		return cred, false, nil
 	}
-	if strings.TrimSpace(cred.AccessToken) == "" {
+	if cred.AuthMethod == authMethodAPIKey {
+		return cred, false, nil
+	}
+	if strings.TrimSpace(cred.bearerToken()) == "" {
 		return cred, false, statusError{
 			Code: "missing_access_token", Message: "Kiro profile discovery requires an access token",
 			HTTPStatus: http.StatusUnauthorized,

@@ -17,6 +17,8 @@ type quotaAccount struct {
 	Label            string                `json:"label,omitempty"`
 	Status           string                `json:"status"`
 	Error            string                `json:"error,omitempty"`
+	AuthMethod       string                `json:"auth_method,omitempty"`
+	Disabled         bool                  `json:"disabled,omitempty"`
 	Plan             string                `json:"plan,omitempty"`
 	Balance          *float64              `json:"balance,omitempty"`
 	Unit             string                `json:"unit,omitempty"`
@@ -128,10 +130,27 @@ func loadKiroQuotas(callbackID string) ([]quotaAccount, error) {
 	accounts := make([]quotaAccount, 0)
 	for _, entry := range list.Files {
 		isKiro := strings.EqualFold(entry.Provider, providerID) || strings.EqualFold(entry.Type, providerID)
-		if entry.Disabled || !isKiro {
+		if !isKiro {
 			continue
 		}
-		account := quotaAccount{AuthIndex: entry.AuthIndex, Name: entry.Name, Label: entry.Label, Status: "error"}
+		account := quotaAccount{AuthIndex: entry.AuthIndex, Name: entry.Name, Label: entry.Label, Status: "error", Disabled: entry.Disabled}
+		if entry.Disabled {
+			account.Status = "disabled"
+			if entry.AuthIndex != "" {
+				if raw, errGet := callHostCall("host.auth.get", map[string]any{"auth_index": entry.AuthIndex}); errGet == nil {
+					var auth hostAuthGetResponse
+					if json.Unmarshal(raw, &auth) == nil {
+						if cred, errCredential := decodeCredential(auth.JSON); errCredential == nil {
+							account.AuthMethod = cred.AuthMethod
+							account.Email = cred.Email
+							account.Label = kironx.NonEmpty(cred.Email, account.Label)
+						}
+					}
+				}
+			}
+			accounts = append(accounts, account)
+			continue
+		}
 		if entry.AuthIndex == "" {
 			account.Error = "Kiro auth has no runtime auth index"
 			accounts = append(accounts, account)
@@ -160,6 +179,8 @@ func loadKiroQuotaAccount(account *quotaAccount, callbackID string) error {
 	if errCredential != nil {
 		return errCredential
 	}
+	account.AuthMethod = cred.AuthMethod
+	account.Email = cred.Email
 	if cred.AuthID == "" {
 		nameID := strings.TrimSuffix(strings.TrimSpace(auth.Name), ".json")
 		if stableID := validCredentialID(nameID); stableID != "" {
@@ -176,12 +197,15 @@ func loadKiroQuotaAccount(account *quotaAccount, callbackID string) error {
 		cred = refreshed
 		persistCredentialByNameBestEffort(auth.Name, cred)
 	}
+	account.AuthMethod = cred.AuthMethod
+	account.Email = cred.Email
 	withProfile, discovered, errProfile := ensureProfileARN(cred, callbackID)
 	if errProfile != nil {
 		return errProfile
 	}
 	cred = withProfile
 	if discovered {
+		account.Email = cred.Email
 		persistCredentialByNameBestEffort(auth.Name, cred)
 	}
 	resp, errHTTP := callKiroUsageLimits(cred, callbackID, loadedConfig().UsageURL)
@@ -229,19 +253,23 @@ func callKiroUsageLimits(cred credential, callbackID, configuredURL string) (hos
 		return hostHTTPResponse{}, errEndpoint
 	}
 	clientID := "KiroIDE-0.7.45-" + kironx.NonEmpty(strings.TrimSpace(cred.Fingerprint), "unknown")
+	headers := http.Header{
+		"Authorization":               []string{"Bearer " + cred.bearerToken()},
+		"User-Agent":                  []string{"aws-sdk-js/1.0.0 ua/2.1 os/linux lang/js md/nodejs api/codewhispererruntime#1.0.0 m/N,E " + clientID},
+		"X-Amz-User-Agent":            []string{"aws-sdk-js/1.0.0 " + clientID},
+		"X-Amzn-Codewhisperer-Optout": []string{"true"},
+		"Amz-Sdk-Invocation-Id":       []string{randomID()},
+		"Amz-Sdk-Request":             []string{"attempt=1; max=1"},
+		"Connection":                  []string{"close"},
+	}
+	if tokenType := cred.tokenType(); tokenType != "" {
+		headers.Set("TokenType", tokenType)
+	}
 	return hostHTTPDoCall(hostHTTPRequest{
 		HostCallbackID: callbackID,
 		Method:         http.MethodGet,
 		URL:            endpoint,
-		Headers: http.Header{
-			"Authorization":               []string{"Bearer " + cred.AccessToken},
-			"User-Agent":                  []string{"aws-sdk-js/1.0.0 ua/2.1 os/linux lang/js md/nodejs api/codewhispererruntime#1.0.0 m/N,E " + clientID},
-			"X-Amz-User-Agent":            []string{"aws-sdk-js/1.0.0 " + clientID},
-			"X-Amzn-Codewhisperer-Optout": []string{"true"},
-			"Amz-Sdk-Invocation-Id":       []string{randomID()},
-			"Amz-Sdk-Request":             []string{"attempt=1; max=1"},
-			"Connection":                  []string{"close"},
-		},
+		Headers:        headers,
 	})
 }
 
@@ -259,6 +287,7 @@ func kiroUsageEndpoint(configuredURL, region, profileARN string) (string, error)
 	query := parsed.Query()
 	query.Set("origin", "AI_EDITOR")
 	query.Set("resourceType", "AGENTIC_REQUEST")
+	query.Set("isEmailRequired", "true")
 	if profileARN = strings.TrimSpace(profileARN); profileARN != "" {
 		query.Set("profileArn", profileARN)
 	} else {

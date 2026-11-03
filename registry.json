@@ -70,7 +70,7 @@
     {
       "id": "kiro",
       "name": "Kiro",
-      "description": "Kiro (AWS CodeWhisperer) provider for CLIProxyAPI: imports Kiro IDE / kiro-cli / Amazon Q / AWS SSO credentials (JSON, SQLite, sibling device registrations), Kiro desktop browser OAuth, AWS SSO OIDC device flow and IAM Identity Center browser flow, live ListAvailableModels catalog discovery, AWS Event Stream chat executor, GetUsageLimits quota reporting, and a management panel.",
+      "description": "Kiro (AWS CodeWhisperer) provider for CLIProxyAPI: imports Kiro IDE / kiro-cli / Amazon Q / AWS SSO credentials (JSON, SQLite, sibling device registrations), Kiro desktop browser OAuth, Google/GitHub social device flow, AWS SSO OIDC and IAM Identity Center login, API Keys and External IdP credentials, live ListAvailableModels catalog discovery, per-account pacing and failure isolation, AWS Event Stream chat executor, GetUsageLimits quota reporting, and a management panel.",
       "author": "varcli",
       "version": "0.7.1",
       "repository": "https://github.com/varcli/cpa-plugins",

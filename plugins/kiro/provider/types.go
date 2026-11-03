@@ -114,24 +114,31 @@ type credential struct {
 	Kind           string   `json:"kind,omitempty"`
 	Version        int      `json:"version"`
 	AuthID         string   `json:"auth_id,omitempty"`
+	AuthMethod     string   `json:"authMethod,omitempty"`
 	AuthType       string   `json:"auth_type"`
 	Mode           string   `json:"mode"`
 	SourcePath     string   `json:"source_path,omitempty"`
 	SourceKind     string   `json:"source_kind,omitempty"`
 	SocialProvider string   `json:"social_provider,omitempty"`
+	Provider       string   `json:"kiroProvider,omitempty"`
 	SourceTokenKey string   `json:"source_token_key,omitempty"`
 	AccessToken    string   `json:"access_token,omitempty"`
 	RefreshToken   string   `json:"refresh_token"`
 	ClientID       string   `json:"client_id,omitempty"`
 	ClientSecret   string   `json:"client_secret,omitempty"`
 	ClientIDHash   string   `json:"client_id_hash,omitempty"`
+	TokenEndpoint  string   `json:"tokenEndpoint,omitempty"`
+	KiroAPIKey     string   `json:"kiroApiKey,omitempty"`
 	ProfileARN     string   `json:"profile_arn,omitempty"`
 	SSORegion      string   `json:"sso_region,omitempty"`
 	APIRegion      string   `json:"api_region,omitempty"`
 	ExpiresAt      string   `json:"expires_at,omitempty"`
 	Scopes         []string `json:"scopes,omitempty"`
+	Email          string   `json:"email,omitempty"`
+	UserID         string   `json:"user_id,omitempty"`
 	Label          string   `json:"label,omitempty"`
 	Fingerprint    string   `json:"fingerprint,omitempty"`
+	DisableCooling bool     `json:"disable_cooling,omitempty"`
 }
 
 type authParseRequest struct {
@@ -314,8 +321,12 @@ type kiroUsageBreakdown struct {
 }
 
 type kiroUsageLimitsResponse struct {
-	DaysUntilReset   int64   `json:"daysUntilReset"`
-	NextDateReset    float64 `json:"nextDateReset"`
+	DaysUntilReset int64   `json:"daysUntilReset"`
+	NextDateReset  float64 `json:"nextDateReset"`
+	UserInfo       *struct {
+		Email  string `json:"email"`
+		UserID string `json:"userId"`
+	} `json:"userInfo"`
 	SubscriptionInfo struct {
 		SubscriptionTitle string `json:"subscriptionTitle"`
 		Type              string `json:"type"`
@@ -453,6 +464,9 @@ type pluginConfig struct {
 	ImportMode         string   `json:"import_mode"`
 	LoginMode          string   `json:"login_mode"`
 	SocialProvider     string   `json:"social_provider"`
+	MinTokenInterval   string   `json:"min_token_interval"`
+	MaxTokenInterval   string   `json:"max_token_interval"`
+	SuspendCooldown    string   `json:"suspend_cooldown"`
 	StaticModels       []string `json:"static_models"`
 	APIRegion          string   `json:"api_region"`
 	SSORegion          string   `json:"sso_region"`

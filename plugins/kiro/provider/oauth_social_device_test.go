@@ -34,6 +34,9 @@ func TestSocialDeviceLoginReturnsCredentials(t *testing.T) {
 	requests := 0
 	hostHTTPDoCall = func(req hostHTTPRequest) (hostHTTPResponse, error) {
 		requests++
+		if req.Method == http.MethodGet && req.URL == "https://q.us-east-1.amazonaws.com/getUsageLimits?isEmailRequired=true&origin=AI_EDITOR&profileArn=arn%3Aaws%3Acodewhisperer%3Aus-east-1%3A123456789012%3Aprofile%2Fsocial&resourceType=AGENTIC_REQUEST" {
+			return hostHTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"userInfo":{"email":"dev@example.com","userId":"user-1"}}`)}, nil
+		}
 		var payload map[string]string
 		if errDecode := json.Unmarshal(req.Body, &payload); errDecode != nil {
 			t.Fatal(errDecode)
@@ -103,14 +106,14 @@ func TestSocialDeviceLoginReturnsCredentials(t *testing.T) {
 		t.Fatalf("stored credential = %#v", stored)
 	}
 	wantAuthID := oauthCredentialID("github", start.State)
-	if poll.Auth.ID != wantAuthID || poll.Auth.FileName != wantAuthID+".json" || stored.AuthID != wantAuthID {
-		t.Fatalf("social auth identity = ID %q, file %q, stored ID %q; want %q", poll.Auth.ID, poll.Auth.FileName, stored.AuthID, wantAuthID)
+	if poll.Auth.ID == wantAuthID || poll.Auth.FileName != "kiro-github-dev@example.com.json" || stored.AuthID != poll.Auth.ID || stored.Email != "dev@example.com" {
+		t.Fatalf("social auth identity = ID %q, file %q, stored ID %q", poll.Auth.ID, poll.Auth.FileName, stored.AuthID)
 	}
 	if poll.Auth.Metadata["social_provider"] != "github" || poll.Auth.Attributes["social_provider"] != "github" {
 		t.Fatalf("social auth provider metadata = %#v / %#v", poll.Auth.Metadata, poll.Auth.Attributes)
 	}
-	if requests != 2 {
-		t.Fatalf("request count = %d, want 2", requests)
+	if requests != 3 {
+		t.Fatalf("request count = %d, want 3", requests)
 	}
 }
 
@@ -163,12 +166,12 @@ func TestSocialDeviceLoginHonoursProviderOverride(t *testing.T) {
 	}
 }
 
-// Signing the same provider in twice must add a second account rather than
-// overwrite the first, and the two providers must not collide either.
+// Without an account identity each authorization keeps its own file; once an
+// email is known the same account uses a stable file and overwrites itself.
 func TestSocialOAuthAuthorizationsUseDistinctCredentialIDs(t *testing.T) {
 	profileARN := "arn:aws:codewhisperer:us-east-1:123456789012:profile/social"
 	first := credential{
-		Version: 1, AuthID: oauthCredentialID("github", "authorization-one"),
+		Version: 1, AuthMethod: authMethodSocial, SocialProvider: "github", AuthID: oauthCredentialID("github", "authorization-one"),
 		SourceKind: "oauth_social_device", ProfileARN: profileARN, RefreshToken: "shared-refresh-token",
 	}
 	second := first
@@ -187,6 +190,15 @@ func TestSocialOAuthAuthorizationsUseDistinctCredentialIDs(t *testing.T) {
 	}
 	if firstAuth.ID == googleAuth.ID || firstAuth.FileName == googleAuth.FileName {
 		t.Fatalf("GitHub and Google authorizations collided: %#v and %#v", firstAuth, googleAuth)
+	}
+	first.Email = "same@example.com"
+	first.UserID = "user-1"
+	second.Email = first.Email
+	second.UserID = first.UserID
+	firstWithEmail, _ := authDataFromCredential(first)
+	secondWithEmail, _ := authDataFromCredential(second)
+	if firstWithEmail.ID != secondWithEmail.ID || firstWithEmail.FileName != secondWithEmail.FileName {
+		t.Fatalf("same account did not deduplicate: %#v and %#v", firstWithEmail, secondWithEmail)
 	}
 }
 

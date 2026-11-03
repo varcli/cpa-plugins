@@ -1,0 +1,1 @@
+{"bump":"minor","note":"新增 API Key 与 External IdP 导入、账号去重、请求节流和 403 自动隔离"}

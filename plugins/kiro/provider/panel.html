@@ -82,6 +82,10 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .pb-meta{font-size:11px;color:var(--mut);margin-top:6px}
 .actions{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}
 .field-input{flex:1;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--fg)}
+.field-label{display:flex;flex-direction:column;gap:6px;color:var(--mut);font-size:12px;min-width:180px}
+.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-top:12px}
+.form-grid .wide{grid-column:1/-1}
+.hint{color:var(--mut);font-size:12px;line-height:1.55;margin-top:8px}
 .toasts{position:fixed;top:16px;right:16px;display:flex;flex-direction:column;gap:10px;z-index:9999;max-width:360px}
 .toast{background:var(--card);border:1px solid var(--border);border-left:4px solid var(--acc);border-radius:var(--radius-md);padding:14px 18px;font-size:13px;box-shadow:var(--toast-shadow);transform:translateX(120%);opacity:0;transition:transform .3s cubic-bezier(.2,.9,.3,1.1),opacity .25s;cursor:pointer;word-break:break-all}
 .toast.show{transform:translateX(0);opacity:1}
@@ -144,7 +148,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 <body>
 <div class="wrap">
   <h1>Kiro 账号面板</h1>
-  <div class="sub">Kiro（AWS CodeWhisperer）· 账号用量与配额 · Builder ID / 组织（IAM Identity Center）· 桌面浏览器与 AWS SSO 设备码登录</div>
+  <div class="sub">Kiro（AWS CodeWhisperer）· 多账号用量与配额 · 社交账号 / Builder ID / IAM Identity Center / API Key</div>
   <div id="authBox" class="card" style="display:none;margin-bottom:16px">
     <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
     <div style="display:flex;gap:8px">
@@ -155,21 +159,75 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   <div class="bar">
     <button id="refreshBtn" onclick="load(true,this)">刷新数据</button>
     <button class="sec" onclick="refreshQuota(this)" title="重新向上游查询 GetUsageLimits（不发送模型请求）">刷新配额</button>
-    <button class="sec" onclick="loginStart(this)">新增 Kiro 账号</button>
-    <select id="socialProvider" class="field-input" title="social-device 登录使用哪个第三方账号">
-      <option value="google">Google 账号</option>
-      <option value="github">GitHub 账号</option>
-    </select>
+    <button class="sec" onclick="document.getElementById('addAccountCard').scrollIntoView({behavior:'smooth'})">新增 / 导入账号</button>
     <span class="toggle" id="svtime"></span>
   </div>
-  <div class="card" style="margin-bottom:16px">
+  <div class="card" id="addAccountCard" style="margin-bottom:16px">
+    <h2>新增或导入 Kiro 账号</h2>
     <div id="loginStatus" style="margin-bottom:6px;padding:6px 8px;border:1px solid rgba(128,128,128,.35);border-radius:6px;color:var(--mut);font-size:12px;line-height:1.5;word-break:break-all;max-height:9em;overflow-y:auto">登录状态：未开始</div>
-    <div style="margin-bottom:6px;color:var(--mut)">Google / GitHub 账号走设备码流程：插件会打开 app.kiro.dev 的验证页，在页面完成授权后回来点「检查状态」即可，无需粘贴任何链接。<span style="opacity:.75">若 login_mode 配成 kiro-browser，浏览器停在「无法连接 127.0.0.1:&lt;端口&gt;」时把地址栏完整链接粘贴到此处提交（无需改写前缀）；aws-device 请访问验证地址并输入用户码。</span></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <div class="form-grid">
+      <label class="field-label">登录方式
+        <select id="loginMethod" class="field-input" onchange="syncLoginMethod()">
+          <option value="social-google">Google 账号</option>
+          <option value="social-github">GitHub 账号</option>
+          <option value="builder-id">Builder ID</option>
+          <option value="iam-idc">IAM Identity Center</option>
+          <option value="kiro-browser">Kiro 桌面浏览器（旧版）</option>
+          <option value="import-apikey">导入 API Key</option>
+          <option value="import-refresh">导入 Refresh Token</option>
+        </select>
+      </label>
+    </div>
+    <div id="idcFields" class="form-grid" style="display:none">
+      <label class="field-label">AWS access portal URL
+        <input id="idcStartURL" class="field-input" type="url" placeholder="https://example.awsapps.com/start">
+      </label>
+      <label class="field-label">SSO Region
+        <input id="idcRegion" class="field-input" type="text" value="us-east-1">
+      </label>
+    </div>
+    <div id="apiKeyFields" class="form-grid" style="display:none">
+      <label class="field-label wide">Kiro API Key
+        <input id="apiKeyValue" class="field-input" type="password" autocomplete="off" placeholder="粘贴 Kiro API Key">
+      </label>
+      <label class="field-label">显示名称（可选）
+        <input id="apiKeyLabel" class="field-input" type="text" placeholder="Kiro API Key">
+      </label>
+    </div>
+    <div id="refreshFields" class="form-grid" style="display:none">
+      <label class="field-label">凭据类型
+        <select id="refreshMethod" class="field-input">
+          <option value="social">Social（Google / GitHub）</option>
+          <option value="idc">IdC（Builder ID / 企业 SSO）</option>
+          <option value="external_idp">External IdP（Entra ID 等）</option>
+        </select>
+      </label>
+      <label class="field-label">Region
+        <input id="refreshRegion" class="field-input" type="text" value="us-east-1">
+      </label>
+      <label class="field-label wide">Refresh Token
+        <input id="refreshToken" class="field-input" type="password" autocomplete="off">
+      </label>
+      <label class="field-label">Client ID
+        <input id="importClientID" class="field-input" type="text" autocomplete="off">
+      </label>
+      <label class="field-label">Client Secret
+        <input id="importClientSecret" class="field-input" type="password" autocomplete="off">
+      </label>
+      <label class="field-label wide">External IdP Token Endpoint
+        <input id="tokenEndpoint" class="field-input" type="url" placeholder="https://login.microsoftonline.com/.../oauth2/v2.0/token">
+      </label>
+    </div>
+    <div class="actions">
+      <button id="startLoginBtn" onclick="startSelectedLogin(this)">开始登录 / 导入</button>
+      <button class="sec" onclick="loginPoll(this)">检查登录状态</button>
+    </div>
+    <div class="hint" id="loginHint">Google / GitHub 使用设备码授权；Builder ID 与 IAM Identity Center 会打开 AWS 授权页；API Key 和 Refresh Token 会直接保存到 CPA。</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
       <input id="cbPaste" type="text" placeholder="http://localhost:3128/signin/callback?code=…&amp;state=…" class="field-input" style="flex:1;min-width:240px">
       <button onclick="submitCallbackURL(this)">完成登录</button>
-      <button class="sec" onclick="loginPoll(this)">检查状态</button>
     </div>
+    <div class="hint">Kiro 桌面浏览器流程可能需要回流到 localhost；远程部署时请粘贴完整回调链接。其他流程会在授权完成后自动更新。</div>
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
@@ -342,8 +400,8 @@ function render(data){
     grid.innerHTML='<div class="loading">暂无 Kiro 账号。点击「新增 Kiro 账号」登录，或用 <span class="code">--kiro-import</span> 导入已有凭证。</div>';
     return;
   }
-  let ok=0, err=0, exhausted=0;
-  accounts.forEach(a=>{ if(a.status==="ok")ok++; else err++; if(isExhausted(a))exhausted++; });
+  let ok=0, err=0, exhausted=0, disabled=0;
+  accounts.forEach(a=>{ if(a.disabled||a.status==="disabled")disabled++; else if(a.status==="ok")ok++; else err++; if(isExhausted(a))exhausted++; });
   summary.style.display="block";
   summary.innerHTML=
     '<div class="summary-hd"><span class="summary-title">总览</span>'+
@@ -352,6 +410,7 @@ function render(data){
       item("账号总数", accounts.length, "")+
       item("正常", ok, "ok")+
       item("异常", err, err?"err":"")+
+      item("已禁用", disabled, disabled?"err":"")+
       item("配额耗尽", exhausted, exhausted?"warn":"")+
     '</div>';
   grid.innerHTML=accounts.map(cardHTML).join("");
@@ -359,22 +418,30 @@ function render(data){
 function item(k,v,cls){return '<div class="summary-item"><div class="k">'+esc(k)+'</div><div class="v '+(cls||"")+'">'+esc(v)+'</div></div>'}
 
 function isExhausted(a){
-  if(!a.quotas||!a.quotas.length)return false;
-  return a.quotas.some(q=>!q.unlimited && Number(q.remaining)<=0);
+  if(a.quotas&&a.quotas.length)return a.quotas.some(q=>!q.unlimited && Number(q.remaining)<=0);
+  if(a.usage&&a.usage.length)return a.usage.some(u=>Number(u.usage_limit)>0 && Number(u.remaining)<=0);
+  return false;
 }
 
 function cardHTML(a){
   const exhausted=isExhausted(a);
   const kind=accountKind(a);
-  const badge= exhausted ? '<span class="badge exhausted">配额耗尽</span>'
+  const canRelogin=a.auth_method!=="api_key" && a.auth_index;
+  const badge= a.disabled || a.status==="disabled" ? '<span class="badge disabled">已禁用</span>'
+    : exhausted ? '<span class="badge exhausted">配额耗尽</span>'
     : a.status==="ok" ? '<span class="badge">正常</span>'
     : '<span class="badge disabled">异常</span>';
   const kindBadge = kind==="org" ? '<span class="badge org">组织</span>'
-    : kind==="builder" ? '<span class="badge builder">Builder ID</span>' : '';
+    : kind==="builder" ? '<span class="badge builder">Builder ID</span>'
+    : kind==="apikey" ? '<span class="badge builder">API Key</span>'
+    : kind==="external" ? '<span class="badge org">External IdP</span>' : '';
   let body="";
-  if(a.status!=="ok" && a.error){
+  if(a.status==="disabled"){
+    body='<div class="row"><span class="k">状态</span><span class="v">账号已禁用，请确认后在 CPA 账号管理中启用或重新登录</span></div>';
+  }else if(a.status!=="ok" && a.error){
     body='<div class="row"><span class="k">错误</span><span class="v err">'+esc(a.error)+'</span></div>';
   }else{
+    if(a.email)body+=row("账号", a.email);
     if(a.plan)body+=row("计划", a.plan);
     if(a.subscription)body+=row("订阅", a.subscription);
     if(a.overage_status)body+=row("超额", a.overage_status);
@@ -383,12 +450,11 @@ function cardHTML(a){
     if(!a.usage||!a.usage.length){
       (a.quotas||[]).forEach(q=>{ body+=quotaHTML(q) });
     }
+    if(!a.usage?.length && !a.quotas?.length)body+='<div class="hint">暂无可用额度数据。</div>';
   }
   return '<div class="card"><h2>'+esc(a.label||a.name||"Kiro 账号")+' '+badge+kindBadge+'</h2>'+
     '<div class="uid">'+esc(a.auth_index||"")+'</div>'+body+
-    '<div class="actions">'+
-      '<button class="sec" onclick="relogin(\''+esc(a.auth_index)+'\',this)">重新登录</button>'+
-    '</div></div>';
+    '<div class="actions">'+(canRelogin?'<button class="sec" onclick="relogin(\''+esc(a.auth_index)+'\',this)">重新登录</button>':'')+'</div></div>';
 }
 function row(k,v,cls){return '<div class="row"><span class="k">'+esc(k)+'</span><span class="v '+(cls||"")+'">'+esc(v)+'</span></div>'}
 
@@ -408,29 +474,96 @@ function quotaHTML(q){
     '<div class="pb-track"><div class="pb-bar" style="width:'+pct+'%"></div></div></div>';
 }
 function accountKind(a){
-  const region=String(a.sso_region||"").toLowerCase();
+  if(a.auth_method==="api_key")return "apikey";
+  if(a.auth_method==="external_idp")return "external";
   if(a.subscription_type && /idc|identity|organization/i.test(String(a.subscription_type)))return "org";
   if(/builder/i.test(String(a.label||"")+String(a.name||"")))return "builder";
   return "";
 }
 
-/* ---------- OAuth login ---------- */
-async function loginStart(btn){
+/* ---------- OAuth login / credential import ---------- */
+function loginMethodValue(){
+  const el=document.getElementById("loginMethod");
+  return el?el.value:"social-google";
+}
+function socialProvider(){
+  return loginMethodValue()==="social-github"?"github":"google";
+}
+function syncLoginMethod(){
+  const method=loginMethodValue();
+  document.getElementById("idcFields").style.display=method==="iam-idc"?"grid":"none";
+  document.getElementById("apiKeyFields").style.display=method==="import-apikey"?"grid":"none";
+  document.getElementById("refreshFields").style.display=method==="import-refresh"?"grid":"none";
+  const hints={
+    "social-google":"Google 账号使用设备码授权，完成授权后回到本页检查状态。",
+    "social-github":"GitHub 账号使用设备码授权，完成授权后回到本页检查状态。",
+    "builder-id":"Builder ID 会打开 AWS 授权页，输入邮箱并确认用户码。",
+    "iam-idc":"填写 IAM Identity Center 的 access portal URL 和 SSO Region。",
+    "kiro-browser":"旧版桌面浏览器流程；远程部署若停在 localhost 页面，请粘贴完整回调链接。",
+    "import-apikey":"直接导入 Kiro API Key，不需要刷新令牌。",
+    "import-refresh":"导入 Social、IdC 或 External IdP Refresh Token；保存后会尝试刷新并读取账号邮箱。"
+  };
+  document.getElementById("loginHint").textContent=hints[method]||"";
+  document.getElementById("startLoginBtn").textContent=method.startsWith("import-")?"导入账号":"开始登录";
+}
+async function startSelectedLogin(btn){
+  const method=loginMethodValue();
+  if(method.startsWith("import-"))return importCredential(btn, method);
+  const body={};
+  switch(method){
+    case "social-github": body.login_mode="social-device"; body.social_provider="github"; break;
+    case "builder-id": body.login_mode="aws-device"; body.sso_start_url="https://view.awsapps.com/start"; break;
+    case "iam-idc":
+      body.login_mode="aws-device";
+      body.sso_start_url=document.getElementById("idcStartURL").value.trim();
+      body.sso_region=document.getElementById("idcRegion").value.trim()||"us-east-1";
+      if(!body.sso_start_url){toast("请填写 access portal URL", "warn");return}
+      break;
+    case "kiro-browser": body.login_mode="kiro-browser"; break;
+    default: body.login_mode="social-device"; body.social_provider="google";
+  }
   busy(btn,true);
   try{
-    // 直接带上 social_provider，面板就不必与宿主配置保持同步：插件按 metadata
-    // 覆盖本次登录使用的第三方账号（google / github）。
-    const body={social_provider:socialProvider()};
-    const data=await api("/oauth/login/start",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders(getKey())),body:JSON.stringify(body)});
     loginMode="login";
+    const data=await api("/oauth/login/start",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders(getKey())),body:JSON.stringify(body)});
     loginState=(data&&data.state)||"";
     const url=(data&&data.url)||"";
     setLoginStatus("登录已开始 · state="+loginState, url);
-    if(url){ try{window.open(url,"_blank","noopener")}catch(e){} }
+    if(url){ try{const w=window.open(url,"_blank","noopener");if(w)w.opener=null}catch(e){} }
     toast("登录已开始", "ok", url?("已在新标签页打开授权页；若被拦截请手动复制地址"):"");
     pollLoop();
   }catch(e){
     toast("无法开始登录", "err", e.message);
+  }finally{busy(btn,false)}
+}
+async function importCredential(btn, method){
+  if(method==="import-apikey"&&!document.getElementById("apiKeyValue").value.trim()){toast("请输入 API Key", "warn");return}
+  if(method==="import-refresh"&&!document.getElementById("refreshToken").value.trim()){toast("请输入 Refresh Token", "warn");return}
+  const body=method==="import-apikey"?{
+    auth_method:"api_key",
+    kiro_api_key:document.getElementById("apiKeyValue").value.trim(),
+    label:document.getElementById("apiKeyLabel").value.trim()
+  }:{
+    auth_method:document.getElementById("refreshMethod").value,
+    refresh_token:document.getElementById("refreshToken").value.trim(),
+    client_id:document.getElementById("importClientID").value.trim(),
+    client_secret:document.getElementById("importClientSecret").value.trim(),
+    token_endpoint:document.getElementById("tokenEndpoint").value.trim(),
+    region:document.getElementById("refreshRegion").value.trim()||"us-east-1",
+    api_region:document.getElementById("refreshRegion").value.trim()||"us-east-1"
+  };
+  busy(btn,true);
+  try{
+    const data=await api("/credentials/import",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders(getKey())),body:JSON.stringify(body)});
+    loginState="";
+    const warning=(data&&data.warning)||"";
+    setLoginStatus(warning||("账号已保存"+(data&&data.file_name?("："+data.file_name):"")),"");
+    toast(warning?"凭据已导入，但刷新失败":"账号已导入", warning?"warn":"ok", warning||(data&&data.label)||"");
+    if(method==="import-apikey"){document.getElementById("apiKeyValue").value="";document.getElementById("apiKeyLabel").value=""}
+    else{document.getElementById("refreshToken").value="";document.getElementById("importClientSecret").value=""}
+    load(false);
+  }catch(e){
+    toast("导入失败", "err", e.message);
   }finally{busy(btn,false)}
 }
 /* 新增登录与重登录各有自己的状态端点；粘贴回调后要继续轮询哪一个，
@@ -438,12 +571,8 @@ async function loginStart(btn){
 function loginStatusEndpoint(){
   return loginMode==="relogin"?"/oauth/relogin/status":"/oauth/login/status";
 }
-/* 第三方账号选择器只对 social-device 有意义，其余流程忽略该字段。 */
-function socialProvider(){
-  const el=document.getElementById("socialProvider");
-  return (el&&el.value)==="github"?"github":"google";
-}
 async function loginPoll(btn){
+  if(!loginState){toast("当前没有进行中的登录", "warn", "请先选择登录方式并开始授权");return}
   if(btn)busy(btn,true);
   try{
     const data=await api(loginStatusEndpoint()+"?state="+encodeURIComponent(loginState));
@@ -512,7 +641,7 @@ function handleLoginResult(data){
     // 组织/Builder ID 登录：回调只完成第一步，还需访问验证地址并输入用户码。
     const url=data.url||"", code=data.user_code||"";
     setLoginStatus("请在浏览器打开验证地址完成授权"+(code?("，用户码 "+code):"")+(url?("　验证地址："+url):""), url);
-    if(url){ try{window.open(url,"_blank","noopener")}catch(e){} }
+    if(url){ try{const w=window.open(url,"_blank","noopener");if(w)w.opener=null}catch(e){} }
     toast("还需完成一步授权", "warn", code?("用户码 "+code+"（已尝试打开验证页）"):"请打开验证地址完成授权");
   }else{
     setLoginStatus("等待授权…（"+esc(status||"pending")+"）","");
@@ -547,7 +676,7 @@ async function relogin(authIndex, btn){
     loginState=(data&&data.state)||"";
     const url=(data&&data.url)||"";
     setLoginStatus("重新登录已开始 · state="+loginState, url);
-    if(url){ try{window.open(url,"_blank","noopener")}catch(e){} }
+    if(url){ try{const w=window.open(url,"_blank","noopener");if(w)w.opener=null}catch(e){} }
     toast("重新登录已开始", "ok", "授权完成后回到本页检查状态");
     pollLoop();
   }catch(e){
@@ -555,6 +684,7 @@ async function relogin(authIndex, btn){
   }finally{busy(btn,false)}
 }
 
+syncLoginMethod();
 load(false);
 </script>
 </body>

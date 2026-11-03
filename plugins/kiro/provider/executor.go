@@ -54,6 +54,7 @@ func executeKiroNonStream(req executorRequest) ([]byte, credential, string, host
 	if credentialNeedsRefresh(cred) {
 		refreshed, errRefresh := refreshCredential(cred, req.HostCallbackID)
 		if errRefresh != nil {
+			recordCredentialFailure(req.AuthID, cred, errRefresh)
 			return nil, cred, "", hostHTTPResponse{}, errRefresh
 		}
 		cred = refreshed
@@ -61,6 +62,7 @@ func executeKiroNonStream(req executorRequest) ([]byte, credential, string, host
 	}
 	withProfile, discovered, errProfile := ensureProfileARN(cred, req.HostCallbackID)
 	if errProfile != nil {
+		recordCredentialFailure(req.AuthID, cred, errProfile)
 		return nil, cred, "", hostHTTPResponse{}, errProfile
 	}
 	cred = withProfile
@@ -71,29 +73,51 @@ func executeKiroNonStream(req executorRequest) ([]byte, credential, string, host
 	if errPayload != nil {
 		return nil, cred, model, hostHTTPResponse{}, statusError{Code: "invalid_request", Message: errPayload.Error(), HTTPStatus: http.StatusBadRequest}
 	}
-	response, errHTTP := sendKiroNonStream(cred, payload, req.HostCallbackID)
+	response, errHTTP := sendKiroNonStream(cred, payload, req.HostCallbackID, req.AuthID)
 	if errHTTP != nil {
+		recordCredentialFailure(req.AuthID, cred, errHTTP)
 		return payload, cred, model, response, errHTTP
 	}
+	if isBlockedResponse(response.StatusCode, response.Body) {
+		disableCredentialBestEffort(req.AuthID, req.AuthAttributes["path"], req.StorageJSON, cred)
+		statusErr := upstreamStatusError("Kiro generateAssistantResponse failed", response.StatusCode, response.Body)
+		recordCredentialFailure(req.AuthID, cred, statusErr)
+		return payload, cred, model, response, statusErr
+	}
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		if cred.AuthMethod == authMethodAPIKey {
+			statusErr := upstreamStatusError("Kiro generateAssistantResponse failed", response.StatusCode, response.Body)
+			recordCredentialFailure(req.AuthID, cred, statusErr)
+			return payload, cred, model, response, statusErr
+		}
 		refreshed, errRefresh := refreshCredential(cred, req.HostCallbackID)
 		if errRefresh != nil {
+			recordCredentialFailure(req.AuthID, cred, errRefresh)
 			return payload, cred, model, response, errRefresh
 		}
 		cred = refreshed
 		persistCredentialBestEffort(req.AuthID, cred)
-		response, errHTTP = sendKiroNonStream(cred, payload, req.HostCallbackID)
+		response, errHTTP = sendKiroNonStream(cred, payload, req.HostCallbackID, req.AuthID)
 		if errHTTP != nil {
+			recordCredentialFailure(req.AuthID, cred, errHTTP)
 			return payload, cred, model, response, errHTTP
+		}
+		if isBlockedResponse(response.StatusCode, response.Body) {
+			disableCredentialBestEffort(req.AuthID, req.AuthAttributes["path"], req.StorageJSON, cred)
 		}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return payload, cred, model, response, upstreamStatusError("Kiro generateAssistantResponse failed", response.StatusCode, response.Body)
+		statusErr := upstreamStatusError("Kiro generateAssistantResponse failed", response.StatusCode, response.Body)
+		recordCredentialFailure(req.AuthID, cred, statusErr)
+		return payload, cred, model, response, statusErr
 	}
 	return payload, cred, model, response, nil
 }
 
-func sendKiroNonStream(cred credential, payload []byte, callbackID string) (hostHTTPResponse, error) {
+func sendKiroNonStream(cred credential, payload []byte, callbackID, authID string) (hostHTTPResponse, error) {
+	if errAdmit := admitCredential(authID, cred); errAdmit != nil {
+		return hostHTTPResponse{}, errAdmit
+	}
 	endpoint := runtimeEndpoint(cred)
 	response, errHTTP := hostHTTPDoCall(hostHTTPRequest{HostCallbackID: callbackID, Method: http.MethodPost, URL: endpoint, Headers: kiroHeaders(cred), Body: payload})
 	if errHTTP != nil {
@@ -142,6 +166,7 @@ func prepareKiroStream(req executorRequest) (hostHTTPStreamResponse, string, cre
 	if credentialNeedsRefresh(cred) {
 		refreshed, errRefresh := refreshCredential(cred, req.HostCallbackID)
 		if errRefresh != nil {
+			recordCredentialFailure(req.AuthID, cred, errRefresh)
 			return hostHTTPStreamResponse{}, "", cred, errRefresh
 		}
 		cred = refreshed
@@ -149,6 +174,7 @@ func prepareKiroStream(req executorRequest) (hostHTTPStreamResponse, string, cre
 	}
 	withProfile, discovered, errProfile := ensureProfileARN(cred, req.HostCallbackID)
 	if errProfile != nil {
+		recordCredentialFailure(req.AuthID, cred, errProfile)
 		return hostHTTPStreamResponse{}, "", cred, errProfile
 	}
 	cred = withProfile
@@ -159,21 +185,48 @@ func prepareKiroStream(req executorRequest) (hostHTTPStreamResponse, string, cre
 	if errPayload != nil {
 		return hostHTTPStreamResponse{}, model, cred, statusError{Code: "invalid_request", Message: errPayload.Error(), HTTPStatus: http.StatusBadRequest}
 	}
-	response, errOpen := openKiroStream(cred, payload, req.HostCallbackID)
+	response, errOpen := openKiroStream(cred, payload, req.HostCallbackID, req.AuthID)
 	if errOpen != nil {
+		recordCredentialFailure(req.AuthID, cred, errOpen)
 		return response, model, cred, errOpen
 	}
+	if blockedBody, blocked := readBlockedStreamBody(response); blocked {
+		disableCredentialBestEffort(req.AuthID, req.AuthAttributes["path"], req.StorageJSON, cred)
+		closeHostHTTPStream(response.StreamID)
+		statusErr := upstreamStatusError("Kiro generateAssistantResponse failed", response.StatusCode, blockedBody)
+		recordCredentialFailure(req.AuthID, cred, statusErr)
+		return hostHTTPStreamResponse{}, model, cred, statusErr
+	}
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		if cred.AuthMethod == authMethodAPIKey {
+			body, errRead := readAllHostHTTPStream(response.StreamID)
+			closeHostHTTPStream(response.StreamID)
+			if errRead != nil {
+				return hostHTTPStreamResponse{}, model, cred, errRead
+			}
+			statusErr := upstreamStatusError("Kiro generateAssistantResponse failed", response.StatusCode, body)
+			recordCredentialFailure(req.AuthID, cred, statusErr)
+			return hostHTTPStreamResponse{}, model, cred, statusErr
+		}
 		closeHostHTTPStream(response.StreamID)
 		refreshed, errRefresh := refreshCredential(cred, req.HostCallbackID)
 		if errRefresh != nil {
+			recordCredentialFailure(req.AuthID, cred, errRefresh)
 			return hostHTTPStreamResponse{}, model, cred, errRefresh
 		}
 		cred = refreshed
 		persistCredentialBestEffort(req.AuthID, cred)
-		response, errOpen = openKiroStream(cred, payload, req.HostCallbackID)
+		response, errOpen = openKiroStream(cred, payload, req.HostCallbackID, req.AuthID)
 		if errOpen != nil {
+			recordCredentialFailure(req.AuthID, cred, errOpen)
 			return response, model, cred, errOpen
+		}
+		if blockedBody, blocked := readBlockedStreamBody(response); blocked {
+			disableCredentialBestEffort(req.AuthID, req.AuthAttributes["path"], req.StorageJSON, cred)
+			closeHostHTTPStream(response.StreamID)
+			statusErr := upstreamStatusError("Kiro generateAssistantResponse failed", response.StatusCode, blockedBody)
+			recordCredentialFailure(req.AuthID, cred, statusErr)
+			return hostHTTPStreamResponse{}, model, cred, statusErr
 		}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -182,7 +235,9 @@ func prepareKiroStream(req executorRequest) (hostHTTPStreamResponse, string, cre
 		if errRead != nil {
 			return hostHTTPStreamResponse{}, model, cred, errRead
 		}
-		return hostHTTPStreamResponse{}, model, cred, upstreamStatusError("Kiro generateAssistantResponse failed", response.StatusCode, body)
+		statusErr := upstreamStatusError("Kiro generateAssistantResponse failed", response.StatusCode, body)
+		recordCredentialFailure(req.AuthID, cred, statusErr)
+		return hostHTTPStreamResponse{}, model, cred, statusErr
 	}
 	return response, model, cred, nil
 }
@@ -238,13 +293,27 @@ func consumeKiroStream(streamID string, response hostHTTPStreamResponse, model s
 	return nil
 }
 
-func openKiroStream(cred credential, payload []byte, callbackID string) (hostHTTPStreamResponse, error) {
+func openKiroStream(cred credential, payload []byte, callbackID, authID string) (hostHTTPStreamResponse, error) {
+	if errAdmit := admitCredential(authID, cred); errAdmit != nil {
+		return hostHTTPStreamResponse{}, errAdmit
+	}
 	endpoint := runtimeEndpoint(cred)
 	response, errHTTP := hostHTTPDoStreamCall(hostHTTPRequest{HostCallbackID: callbackID, Method: http.MethodPost, URL: endpoint, Headers: kiroHeaders(cred), Body: payload})
 	if errHTTP != nil {
 		return response, statusError{Code: "network_error", Message: "Kiro streaming request failed", Retryable: true, HTTPStatus: http.StatusBadGateway, Cause: errHTTP}
 	}
 	return response, nil
+}
+
+func readBlockedStreamBody(response hostHTTPStreamResponse) ([]byte, bool) {
+	if response.StatusCode != http.StatusForbidden || response.StreamID == "" {
+		return nil, false
+	}
+	body, errRead := readAllHostHTTPStream(response.StreamID)
+	if errRead != nil || !isBlockedResponse(response.StatusCode, body) {
+		return nil, false
+	}
+	return body, true
 }
 
 func runtimeEndpoint(cred credential) string {
@@ -255,8 +324,8 @@ func runtimeEndpoint(cred credential) string {
 
 func kiroHeaders(cred credential) http.Header {
 	fingerprint := kironx.NonEmpty(cred.Fingerprint, "default-kiro")
-	return http.Header{
-		"Authorization":               []string{"Bearer " + cred.AccessToken},
+	headers := http.Header{
+		"Authorization":               []string{"Bearer " + cred.bearerToken()},
 		"Content-Type":                []string{"application/x-amz-json-1.0"},
 		"X-Amz-Target":                []string{"AmazonCodeWhispererStreamingService.GenerateAssistantResponse"},
 		"User-Agent":                  []string{"aws-sdk-js/1.0.27 ua/2.1 os/linux lang/js md/nodejs api/codewhispererstreaming KiroIDE-0.7.45-" + fingerprint},
@@ -266,6 +335,10 @@ func kiroHeaders(cred credential) http.Header {
 		"Amz-Sdk-Invocation-Id":       []string{randomID()},
 		"Amz-Sdk-Request":             []string{"attempt=1; max=3"},
 	}
+	if tokenType := cred.tokenType(); tokenType != "" {
+		headers.Set("TokenType", tokenType)
+	}
+	return headers
 }
 
 func convertNonStreamResponse(raw []byte, model string) ([]byte, error) {

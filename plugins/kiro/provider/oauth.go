@@ -167,6 +167,9 @@ func applyOAuthOverrides(config *pluginConfig, metadata map[string]any) {
 	if value := strings.TrimSpace(kironx.String(metadata, "sso_region")); value != "" {
 		config.SSORegion = value
 	}
+	if value := strings.TrimSpace(kironx.String(metadata, "api_region")); value != "" {
+		config.APIRegion = value
+	}
 	if value := strings.TrimSpace(kironx.String(metadata, "browser_redirect_uri")); value != "" {
 		config.BrowserRedirectURI = value
 	}
@@ -315,13 +318,13 @@ func pollIDCBrowserLoginRequest(req authLoginPollRequest) ([]byte, error) {
 		token.ExpiresIn = 3600
 	}
 	credential := credential{
-		Version: 1, AuthType: "aws_sso_oidc", Mode: "copy", SourceKind: "oauth_organization_browser",
+		Version: 1, AuthMethod: authMethodIDC, Mode: "copy", SourceKind: "oauth_organization_browser",
 		AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, ClientID: loginState.ClientID,
 		ClientSecret: loginState.ClientSecret, SSORegion: loginState.Region, APIRegion: loginState.APIRegion,
 		ExpiresAt: time.Now().UTC().Add(time.Duration(token.ExpiresIn) * time.Second).Format(time.RFC3339),
 		Scopes:    append([]string(nil), loginState.Scopes...), Label: "Kiro Organization",
 	}
-	credential, _, _ = ensureProfileARN(credential, req.HostCallbackID)
+	credential = finalizeLoginCredential(credential, req.HostCallbackID)
 	auth, errAuth := authDataFromCredential(credential)
 	if errAuth != nil {
 		return nil, errAuth
@@ -509,12 +512,12 @@ func pollBrowserLoginRequest(req authLoginPollRequest) ([]byte, error) {
 		apiRegion = defaultRegion
 	}
 	credential := credential{
-		Version: 1, Mode: "copy", SourceKind: "oauth_browser", AccessToken: token.AccessToken,
+		Version: 1, AuthMethod: authMethodSocial, Mode: "copy", SourceKind: "oauth_browser", AccessToken: token.AccessToken,
 		RefreshToken: token.RefreshToken, ProfileARN: token.ProfileARN, SSORegion: defaultRegion,
 		APIRegion: apiRegion, ExpiresAt: time.Now().UTC().Add(time.Duration(token.ExpiresIn) * time.Second).Format(time.RFC3339),
 		Label: "Kiro Browser Account",
 	}
-	credential, _, _ = ensureProfileARN(credential, req.HostCallbackID)
+	credential = finalizeLoginCredential(credential, req.HostCallbackID)
 	auth, errAuth := authDataFromCredential(credential)
 	if errAuth != nil {
 		clearBrowserLoginSession(req.State)
@@ -703,12 +706,12 @@ func pollSocialDeviceLoginRequest(req authLoginPollRequest) ([]byte, error) {
 		providerLabel = "GitHub"
 	}
 	credential := credential{
-		Version: 1, AuthID: oauthCredentialID(loginState.SocialProvider, req.State), Mode: "copy", SourceKind: "oauth_social_device",
+		Version: 1, AuthMethod: authMethodSocial, AuthID: oauthCredentialID(loginState.SocialProvider, req.State), Mode: "copy", SourceKind: "oauth_social_device",
 		AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, ProfileARN: token.ProfileARN, SSORegion: defaultRegion,
 		APIRegion: kironx.NonEmpty(strings.TrimSpace(loginState.APIRegion), defaultRegion), ExpiresAt: time.Now().UTC().Add(time.Duration(token.ExpiresIn) * time.Second).Format(time.RFC3339),
 		SocialProvider: loginState.SocialProvider, Label: "Kiro " + providerLabel,
 	}
-	credential, _, _ = ensureProfileARN(credential, req.HostCallbackID)
+	credential = finalizeLoginCredential(credential, req.HostCallbackID)
 	auth, errAuth := authDataFromCredential(credential)
 	if errAuth != nil {
 		clearDeviceLoginPoll(req.State)
@@ -945,7 +948,7 @@ func pollDeviceLoginRequest(req authLoginPollRequest) ([]byte, error) {
 	}
 	credential := credential{
 		Version:      1,
-		AuthType:     "aws_sso_oidc",
+		AuthMethod:   authMethodIDC,
 		Mode:         "copy",
 		SourceKind:   "oauth_device",
 		AccessToken:  token.AccessToken,
@@ -958,7 +961,7 @@ func pollDeviceLoginRequest(req authLoginPollRequest) ([]byte, error) {
 		Scopes:       append([]string(nil), loginState.Scopes...),
 		Label:        label,
 	}
-	credential, _, _ = ensureProfileARN(credential, req.HostCallbackID)
+	credential = finalizeLoginCredential(credential, req.HostCallbackID)
 	auth, errAuth := authDataFromCredential(credential)
 	if errAuth != nil {
 		clearDeviceLoginPoll(req.State)

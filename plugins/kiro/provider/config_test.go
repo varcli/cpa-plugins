@@ -73,3 +73,17 @@ func TestNormalizeSocialProvider(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyConfigFallsBackFromInvalidPacing(t *testing.T) {
+	restoreConfig(t)
+	applyConfigYAML(t, "min_token_interval: 250ms\nmax_token_interval: 3s\nsuspend_cooldown: 30m\n")
+	before := loadedConfig()
+	if before.MinTokenInterval != "250ms" || before.MaxTokenInterval != "3s" || before.SuspendCooldown != "30m" {
+		t.Fatalf("valid pacing config was not applied: %+v", before)
+	}
+	applyConfigYAML(t, "min_token_interval: 5s\nmax_token_interval: 1s\n")
+	after := loadedConfig()
+	if after.MinTokenInterval != before.MinTokenInterval || after.MaxTokenInterval != before.MaxTokenInterval || after.SuspendCooldown != before.SuspendCooldown {
+		t.Fatalf("invalid pacing replaced previous config: before=%+v after=%+v", before, after)
+	}
+}

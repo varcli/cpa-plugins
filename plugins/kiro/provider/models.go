@@ -39,7 +39,7 @@ func modelInfos(names []string) []modelInfo {
 		if nativeName == "" {
 			continue
 		}
-		id := "kiro/" + nativeName
+		id := providerID + "/" + nativeName
 		if _, exists := seen[id]; exists {
 			continue
 		}
@@ -68,7 +68,7 @@ func catalogModelInfos(catalog []kiroCatalogModel) []modelInfo {
 		if nativeName == "" {
 			continue
 		}
-		id := "kiro/" + nativeName
+		id := providerID + "/" + nativeName
 		if _, exists := seen[id]; exists {
 			continue
 		}
@@ -146,7 +146,7 @@ func modelsForAuth(raw []byte) ([]byte, error) {
 	}
 	var authUpdate authData
 	credentialUpdated := false
-	if credentialNeedsRefresh(cred) {
+	if cred.AuthMethod != authMethodAPIKey && credentialNeedsRefresh(cred) {
 		refreshed, errRefresh := refreshCredential(cred, req.HostCallbackID)
 		if errRefresh == nil {
 			cred = refreshed
@@ -169,11 +169,12 @@ func modelsForAuth(raw []byte) ([]byte, error) {
 	if len(models) == 0 {
 		models = staticModels()
 	}
+	models = withoutGlobalExclusions(models, req.Host)
 	return okEnvelope(modelResponse{Provider: providerID, Models: models, AuthUpdate: authUpdate})
 }
 
 func discoverModels(cred credential, callbackID string) []modelInfo {
-	if cred.AccessToken == "" {
+	if cred.bearerToken() == "" {
 		return nil
 	}
 	payload := map[string]any{"origin": "AI_EDITOR"}
@@ -195,6 +196,72 @@ func discoverModels(cred credential, callbackID string) []modelInfo {
 		return nil
 	}
 	return catalogModelInfos(catalog.Models)
+}
+
+func withoutGlobalExclusions(models []modelInfo, host hostConfigSummary) []modelInfo {
+	var patterns []string
+	for provider, rules := range host.ExcludedModels {
+		if !strings.EqualFold(strings.TrimSpace(provider), providerID) {
+			continue
+		}
+		for _, rule := range rules {
+			if pattern := strings.ToLower(strings.TrimSpace(rule)); pattern != "" {
+				patterns = append(patterns, pattern)
+			}
+		}
+	}
+	if len(patterns) == 0 {
+		return models
+	}
+	out := make([]modelInfo, 0, len(models))
+	for _, model := range models {
+		id := strings.ToLower(strings.TrimSpace(model.ID))
+		excluded := false
+		for _, pattern := range patterns {
+			if matchWildcard(pattern, id) || matchWildcard(pattern, strings.TrimPrefix(id, providerID+"/")) {
+				excluded = true
+				break
+			}
+		}
+		if !excluded {
+			out = append(out, model)
+		}
+	}
+	return out
+}
+
+func matchWildcard(pattern, value string) bool {
+	if pattern == "" {
+		return false
+	}
+	if !strings.Contains(pattern, "*") {
+		return pattern == value
+	}
+	parts := strings.Split(pattern, "*")
+	if prefix := parts[0]; prefix != "" {
+		if !strings.HasPrefix(value, prefix) {
+			return false
+		}
+		value = value[len(prefix):]
+	}
+	if suffix := parts[len(parts)-1]; suffix != "" {
+		if !strings.HasSuffix(value, suffix) {
+			return false
+		}
+		value = value[:len(value)-len(suffix)]
+	}
+	for i := 1; i < len(parts)-1; i++ {
+		segment := parts[i]
+		if segment == "" {
+			continue
+		}
+		index := strings.Index(value, segment)
+		if index < 0 {
+			return false
+		}
+		value = value[index+len(segment):]
+	}
+	return true
 }
 
 func modelExcluded(name string, excluded []string) bool {
