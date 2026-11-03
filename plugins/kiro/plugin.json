@@ -8,30 +8,30 @@
       {
         "goarch": "amd64",
         "goos": "linux",
-        "sha256": "5073edaeb292ec2b5cc708830096fb56fcbf6038b2d1519557f3b00991d25b62",
-        "size": 4005983,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.7.1/kiro_0.7.1_linux_amd64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.8.0/kiro_0.8.0_linux_amd64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "linux",
-        "sha256": "db20b0e6e7a05e2636fa39c4f32274e28c8b44b07f150ee65f0e005835fe08f1",
-        "size": 3736679,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.7.1/kiro_0.7.1_linux_arm64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.8.0/kiro_0.8.0_linux_arm64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "darwin",
-        "sha256": "43aef338e5975df7cac3df9db95823e0c48e0791f0ea6390ee75f7eadb0aa25e",
-        "size": 3701466,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.7.1/kiro_0.7.1_darwin_arm64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.8.0/kiro_0.8.0_darwin_arm64.zip"
       },
       {
         "goarch": "amd64",
         "goos": "windows",
-        "sha256": "5996f58d3f6418ca2eca56da1ab2fa3ffa12c64892bf30c0f8ca0891e32cd279",
-        "size": 3972234,
-        "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.7.1/kiro_0.7.1_windows_amd64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/varcli/cpa-plugins/releases/download/kiro%2Fv0.8.0/kiro_0.8.0_windows_amd64.zip"
       }
     ],
     "type": "direct"
@@ -47,5 +47,5 @@
     "codewhisperer",
     "amazon-q"
   ],
-  "version": "0.7.1"
+  "version": "0.8.0"
 }
