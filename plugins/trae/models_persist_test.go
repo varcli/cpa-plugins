@@ -96,6 +96,79 @@ func TestPersistedSnapshotServedOnDiscoveryFailure(t *testing.T) {
 	}
 }
 
+func TestDynamicModelCatalogCarriesAdvertisedPrefix(t *testing.T) {
+	restoreSeams := stubPersistSeams(t, map[string][]byte{})
+	defer restoreSeams()
+	origPrefix, origEnabled := modelPrefixValue, enableModelPrefixValue
+	setModelPrefixConfig("trae/", true)
+	defer setModelPrefixConfig(origPrefix, origEnabled)
+	restore := stubCNDiscovery(t, func(a *auth.Auth) ([]upstream.ModelInfo, error) {
+		return []upstream.ModelInfo{{ID: "deepseek-ai/deepseek-v4-pro", Name: "DeepSeek V4 Pro", ContextWindow: 200000}}, nil
+	})
+	defer restore()
+
+	cn, err := parseStoredAuth(persistTestStorage("tok-cn", "cn", ""))
+	if err != nil {
+		t.Fatalf("parse cn: %v", err)
+	}
+	if got := modelsForVariant(cn, persistTestStorage("tok-cn", "cn", "")); len(got) != 1 || got[0].ID != "trae/deepseek-ai/deepseek-v4-pro" {
+		t.Fatalf("cn dynamic catalog = %+v", got)
+	}
+	solo, err := parseStoredAuth(persistTestStorage("tok-solo", "solo", ""))
+	if err != nil {
+		t.Fatalf("parse solo: %v", err)
+	}
+	if got := modelsForVariant(solo, persistTestStorage("tok-solo", "solo", "")); len(got) != 1 || got[0].ID != "trae/deepseek-ai/deepseek-v4-pro-solo" {
+		t.Fatalf("solo dynamic catalog = %+v", got)
+	}
+}
+
+func TestDynamicModelCatalogHonorsPrefixToggleOff(t *testing.T) {
+	restoreSeams := stubPersistSeams(t, map[string][]byte{})
+	defer restoreSeams()
+	origPrefix, origEnabled := modelPrefixValue, enableModelPrefixValue
+	setModelPrefixConfig("trae/", false)
+	defer setModelPrefixConfig(origPrefix, origEnabled)
+	restore := stubCNDiscovery(t, func(a *auth.Auth) ([]upstream.ModelInfo, error) {
+		return []upstream.ModelInfo{{ID: "deepseek", Name: "DeepSeek"}}, nil
+	})
+	defer restore()
+
+	cn, err := parseStoredAuth(persistTestStorage("tok-cn", "cn", ""))
+	if err != nil {
+		t.Fatalf("parse cn: %v", err)
+	}
+	if got := modelsForVariant(cn, persistTestStorage("tok-cn", "cn", "")); len(got) != 1 || got[0].ID != "deepseek" {
+		t.Fatalf("dynamic catalog with prefix disabled = %+v", got)
+	}
+}
+
+func TestStaticModelCatalogCarriesAdvertisedPrefix(t *testing.T) {
+	origPrefix, origEnabled := modelPrefixValue, enableModelPrefixValue
+	setModelPrefixConfig("trae/", true)
+	defer setModelPrefixConfig(origPrefix, origEnabled)
+	raw, err := handleModelStatic([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil || !env.OK {
+		t.Fatalf("bad envelope: %v %s", err, raw)
+	}
+	var resp pluginapi.ModelResponse
+	if err := json.Unmarshal(env.Result, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Models) == 0 {
+		t.Fatal("static catalog is empty")
+	}
+	for _, model := range resp.Models {
+		if !strings.HasPrefix(model.ID, "trae/") {
+			t.Fatalf("static model %q is missing trae/ prefix", model.ID)
+		}
+	}
+}
+
 // TestPersistedSnapshotSameVariantOnly proves the peer scan never crosses the
 // variant namespace: a cn credential falls back to a cn peer's snapshot, and
 // a solo credential (whose advertised ids carry the -solo suffix) only to a

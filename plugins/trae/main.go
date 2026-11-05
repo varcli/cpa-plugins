@@ -597,6 +597,7 @@ func handleModelStatic(raw []byte) ([]byte, error) {
 	add(staticSoloModels())
 	add(suffixModels(staticSoloModels(), modelSuffixSolo))
 	add(intlstaticModels())
+	out = prefixModelInfos(out)
 	// v0.12.62: static advertisement honors the provider key (no credential
 	// context → no variant sub-key).
 	out = filterExcludedModels(out, req.Host)
@@ -701,8 +702,9 @@ func modelsForVariant(a *auth.Auth, storageJSON []byte) []pluginapi.ModelInfo {
 		return prefixModelInfos(suffixModels(staticForVariant(a.Variant), suffix))
 	}
 	// v0.12.63: stamp the last-known-good catalog into the credential file
-	// (advertised ids, post-suffix, pre exclusion — exclusion re-applies on
-	// every serve branch). Change-guarded inside; best-effort.
+	// (advertised ids, post-prefix/suffix, pre exclusion — exclusion re-applies
+	// on every serve branch). Change-guarded inside; best-effort.
+	out = prefixModelInfos(out)
 	persistModelSnapshot(storageJSON, a.Variant, out)
 	return out
 }
